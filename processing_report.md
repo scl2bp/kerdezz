@@ -1,13 +1,13 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-22T20:01:41+00:00`
+Generated: `2026-09-22T20:24:33+00:00`
 
 ## Executive outcome
 
 - Contract validation: **PASS**
 - Processing masters found: **1** of 2 expected pools
 - Pipeline stages defined: **9**
-- Pipeline stage records attempted: **5**
+- Pipeline stage records attempted: **6**
 - Current boundary: status below reflects the available pool master artifacts.
 
 ## KPI summary
@@ -17,13 +17,13 @@ Generated: `2026-09-22T20:01:41+00:00`
 | Pools with master JSON | 1 |
 | Source artifacts | 1 |
 | Region proposals | 8 |
-| Card artifacts | 0 |
+| Card artifacts | 8 |
 | Review artifacts | 0 |
-| Unexecuted planned stages | 4 |
+| Unexecuted planned stages | 3 |
 | Stage records present | 9 |
-| Available stages | 5 |
+| Available stages | 6 |
 | Cached stages | 0 |
-| Pending stages | 4 |
+| Pending stages | 3 |
 | Model-review pending stages | 0 |
 | Model-uncertain stages | 0 |
 | Rejected stages | 0 |
@@ -37,8 +37,8 @@ Generated: `2026-09-22T20:01:41+00:00`
 | Source files | `source_files` | available: 1 | 1 sources |
 | Collection images | `collection_images` | available: 1 | 1 source cells |
 | Page classification and basic layout estimation | `page_classification` | available: 1 | 1 sources, 1 feature artifacts, 8 accepted regions |
-| Layout fine tuning | `layout_fine_tuning` | available: 1 |  |
-| Card extraction | `card_extraction` | pending: 1 |  |
+| Layout fine tuning | `layout_fine_tuning` | available: 1 | 8 proposals |
+| Card extraction | `card_extraction` | available: 1 | 8 cards |
 | Orientation estimation | `orientation_estimation` | pending: 1 |  |
 | OCR extraction | `ocr_extraction` | pending: 1 |  |
 | LLM review and refinement | `llm_review` | pending: 1 |  |
@@ -47,7 +47,7 @@ Generated: `2026-09-22T20:01:41+00:00`
 
 | Pool | Master artifact | Sources | Regions | Cards | Reviews |
 |---|---|---:|---:|---:|---:|
-| `original` | `pipeline/original/processing_master.json` | 1 | 8 | 0 | 0 |
+| `original` | `pipeline/original/processing_master.json` | 1 | 8 | 8 | 0 |
 
 ## Contract review
 
@@ -58,7 +58,7 @@ Generated: `2026-09-22T20:01:41+00:00`
 
 ## Next gate
 
-Implement and run the `card_extraction` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
+Implement and run the `orientation_estimation` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
 
 ## Source artifacts
 
