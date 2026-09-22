@@ -15,7 +15,7 @@ The current archives were inspected from their ZIP members, not inferred from fi
 | `original` | 31 | 31 `.jpg` | JPEG / RGB | 30 at `1275x1755`, 1 at `1148x1691` | 29 regular 3x3 card sheets, `hely1.jpg` mixed orientation/irregular layout, `tábla1.jpg` non-card board |
 | `children` | 50 | 50 `.jpg` | JPEG / RGB | 50 at `1162x1600` | individual-card source images; layout still requires classification |
 
-The current inputs show several observed layout patterns: regular 3x3 collections, irregular or mixed-orientation collections, and individual card images. These are observations, not routing classes. A separate `non_card` route is required because `tábla1.jpg` is an input image but must produce zero cards. There are no PNG, TIFF, BMP, WEBP, PDF, animated, grayscale, or corrupt image members in these two archives. The implementation still rejects unsupported types explicitly so a future archive cannot be silently misclassified.
+The current inputs show several observed layout patterns: regular 3x3 collections, composite collections with a dominant vertical grid and a bottom pair of horizontal cards, irregular or mixed-orientation collections, and individual card images. These are observations, not routing classes. A separate `non_card` route is required because `tábla1.jpg` is an input image but must produce zero cards. There are no PNG, TIFF, BMP, WEBP, PDF, animated, grayscale, or corrupt image members in these two archives. The implementation still rejects unsupported types explicitly so a future archive cannot be silently misclassified.
 
 ## Classification policy
 
@@ -30,7 +30,7 @@ The routing classes are:
 | `non_card` | Readable input that is not quiz-card content; emits zero accepted regions. |
 | `unknown` | Evidence is insufficient for safe routing; emits zero accepted regions and remains pending for dependent stages. |
 
-The routing taxonomy is constrained only at the routing boundary. Each source also receives an `observation_profile` that may contain multiple content roles, such as `quiz_card_front`, `card_back`, and `game_board`, together with visual state, anomalies, feature summaries, candidate regions, and a layout pattern. The layout pattern may include `grid`, `single`, `irregular_regions`, `none`, or `unknown`, row and column counts, normalized row/column coefficients, and gap coefficients. A source can therefore be routed as `unknown` while still retaining useful facts such as “probable game board” or “probable card back.”
+The routing taxonomy is constrained only at the routing boundary. Each source also receives an `observation_profile` that may contain multiple content roles, such as `quiz_card_front`, `card_back`, and `game_board`, together with visual state, anomalies, feature summaries, candidate regions, and a layout pattern. The layout pattern may include `grid`, `single`, `composite_regions`, `irregular_regions`, `none`, or `unknown`, row and column counts, normalized row/column coefficients, gap coefficients, and region groups such as a dominant vertical grid plus a secondary horizontal pair. A source can therefore be routed as `unknown` while still retaining useful facts such as “probable game board” or “probable card back.”
 
 Exactly one `routing_class` controls downstream geometry. `observation_profile` never silently promotes a source to a route, and model output never directly controls geometry. A new routing class requires a versioned contract change; a new visual variation or content role does not.
 

@@ -53,6 +53,10 @@ def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
         return f"{sum(value.get('source_count', 0) for value in quality_values)} sources"
     if stage_id == "collection_images":
         return f"{sum(value.get('cell_count', 0) for value in quality_values)} source cells"
+    if stage_id == "page_classification":
+        source_count = sum(value.get("source_count", 0) for value in quality_values)
+        feature_count = sum(value.get("feature_artifact_count", 0) for value in quality_values)
+        return f"{source_count} sources, {feature_count} feature artifacts, {sum(count_items(master, 'regions') for master in masters)} accepted regions"
     return ""
 
 

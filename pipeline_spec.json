@@ -41,7 +41,7 @@
     "content_roles": "One or more descriptive roles, including quiz_card_front, card_back, game_board, text_page, photo, decorative, mixed_content, or unknown.",
     "visual_state": "front, back, mixed, unreadable, or unknown.",
     "layout_pattern": {
-      "family": "grid, single, irregular_regions, none, or unknown.",
+      "family": "grid, single, composite_regions, irregular_regions, none, or unknown.",
       "row_count": "Integer estimate or null.",
       "column_count": "Integer estimate or null.",
       "row_coefficient": "Normalized usable-height share per row, or null when no row model is credible.",

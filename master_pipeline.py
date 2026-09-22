@@ -16,6 +16,7 @@ from typing import Any
 
 from PIL import Image
 
+from classification import classify_sources
 from contract_validator import validate_master
 
 
@@ -308,6 +309,9 @@ def build_master(
     until: str,
     resume: bool,
     root: Path = ROOT,
+    enable_llm: bool = False,
+    llm_endpoint: str | None = None,
+    llm_deployment: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     run_root = root / "pipeline" / pool_id / "runs" / run_id
@@ -325,7 +329,7 @@ def build_master(
     source_stage = make_stage(spec["stages"][1], "pending", reason="source phase not selected", run_id=run_id)
     sources: list[dict[str, Any]] = []
     source_errors: list[str] = []
-    if until in ("sources", "collections"):
+    if until in ("sources", "collections", "classification"):
         source_started = utc_now()
         sources, source_errors = materialize_sources(archive_path, pool_root, selected, root)
         source_status = "available" if not source_errors else "failed"
@@ -338,7 +342,7 @@ def build_master(
     collection_stage = make_stage(spec["stages"][2], "pending", reason="collection phase not selected", run_id=run_id)
     collections: list[dict[str, Any]] = []
     collection_errors: list[str] = []
-    if until == "collections":
+    if until in ("collections", "classification"):
         collection_started = utc_now()
         collections, collection_errors = create_source_collections(sources, pool_root, root)
         collection_status = "available" if collections and not collection_errors else "failed"
@@ -348,8 +352,89 @@ def build_master(
         collection_stage["outputs"] = {"artifact_refs": [{"path": item["image_path"], "sha256": item["image_sha256"]} for item in collections] + [{"path": item["manifest_path"], "sha256": item["manifest_sha256"]} for item in collections], "records": collections, "fingerprint": object_hash(collections)}
         collection_stage["quality"] = {"confidence": 1.0 if not collection_errors else 0.0, "review_required": False, "errors": collection_errors, "warnings": [], "source_count": len(sources), "cell_count": sum(item["source_count"] for item in collections)}
         collection_stage["handoff"] = {"accepted_refs": [item["collection_id"] for item in collections], "pending_refs": [], "rejected_refs": [], "reason": "collection evidence is ready for page classification"}
-    stages = [archive_stage, source_stage, collection_stage]
-    for stage in spec["stages"][3:]:
+    classification_stage = make_stage(spec["stages"][3], "pending", reason="classification phase not selected", run_id=run_id)
+    classification_features: list[dict[str, Any]] = []
+    classification_evaluations: list[dict[str, Any]] = []
+    classification_decisions: list[dict[str, Any]] = []
+    classification_artifacts: list[dict[str, Any]] = []
+    classification_regions: list[dict[str, Any]] = []
+    classification_errors: list[str] = []
+    if until == "classification":
+        classification_started = utc_now()
+        if collection_stage["status"] != "available":
+            classification_stage = make_stage(spec["stages"][3], "pending", reason="classification blocked by collection phase", run_id=run_id, started=classification_started)
+        else:
+            classification_features, classification_evaluations, classification_decisions, classification_artifacts, classification_errors = classify_sources(
+                sources,
+                collections,
+                root,
+                pool_root,
+                enable_llm=enable_llm,
+                endpoint=llm_endpoint,
+                deployment=llm_deployment,
+            )
+            decision_by_source = {decision["source_id"]: decision for decision in classification_decisions}
+            for source in sources:
+                decision = decision_by_source.get(source["source_id"])
+                if decision:
+                    source["classification"] = decision
+                    for candidate in decision["observation_profile"]["region_candidates"]:
+                        if candidate.get("accepted"):
+                            region = dict(candidate)
+                            region["region_id"] = f"{source['source_id']}:{candidate['region_id']}"
+                            region["source_id"] = source["source_id"]
+                            region["source_sha256"] = source["file_sha256"]
+                            region["classification_decision_ref"] = decision["artifact_ref"]
+                            classification_regions.append(region)
+            classification_status = "available" if classification_decisions and not classification_errors else "failed"
+            classification_stage = make_stage(
+                spec["stages"][3],
+                classification_status,
+                reason="source features and classification decisions are available" if classification_status == "available" else "one or more classifications failed",
+                run_id=run_id,
+                started=classification_started,
+            )
+            classification_input_fingerprint = object_hash(
+                {
+                    "sources": source_stage["outputs"]["fingerprint"],
+                    "collections": collection_stage["outputs"]["fingerprint"],
+                    "rules": "observation-fusion-v1",
+                    "llm": {"enabled": enable_llm, "endpoint": llm_endpoint, "deployment": llm_deployment},
+                }
+            )
+            classification_stage["cache"] = {"key": classification_input_fingerprint, "parameters": {"llm_enabled": enable_llm}, "reused": False, "source_stage_run": None}
+            classification_stage["input"] = {
+                "artifact_refs": [{"stage_id": "source_files", "fingerprint": source_stage["outputs"]["fingerprint"]}, {"stage_id": "collection_images", "fingerprint": collection_stage["outputs"]["fingerprint"]}],
+                "required_information": spec["stages"][3]["input"],
+                "fingerprint": classification_input_fingerprint,
+            }
+            classification_stage["evaluation"] = {
+                "method": "deterministic source projections and collection-context fusion with optional vision evidence",
+                "rules": ["source feature artifact is content-hash keyed", "model output is evidence only", "unknown and non-card have zero accepted regions", "geometry is emitted only for card_collection"],
+                "decisions": ["routing class", "observation profile", "candidate scores", "region acceptance", "consistency checks"],
+            }
+            classification_stage["outputs"] = {
+                "artifact_refs": classification_artifacts,
+                "records": classification_decisions,
+                "fingerprint": object_hash(classification_decisions),
+            }
+            classification_stage["quality"] = {
+                "confidence": round(sum(item["confidence"] for item in classification_decisions) / len(classification_decisions), 6) if classification_decisions else 0.0,
+                "review_required": any(item["routing_class"] == "unknown" for item in classification_decisions),
+                "errors": classification_errors,
+                "warnings": [f"{sum(item['routing_class'] == 'unknown' for item in classification_decisions)} source(s) remain unknown"],
+                "source_count": len(classification_decisions),
+                "feature_artifact_count": len(classification_features),
+                "collection_evaluation_count": len(classification_evaluations),
+            }
+            classification_stage["handoff"] = {
+                "accepted_refs": [item["source_id"] for item in classification_decisions if item["routing_class"] in {"card_collection", "individual_card"}],
+                "pending_refs": [item["source_id"] for item in classification_decisions if item["routing_class"] == "unknown"],
+                "rejected_refs": [item["source_id"] for item in classification_decisions if item["routing_class"] == "non_card"],
+                "reason": "only card_collection region candidates proceed to geometry; individual_card proceeds without a sheet grid",
+            }
+    stages = [archive_stage, source_stage, collection_stage, classification_stage]
+    for stage in spec["stages"][4:]:
         stages.append(make_stage(stage, "pending", reason=f"blocked until {stage['id']} is implemented", run_id=run_id))
     master = {
         "schema_version": spec["schema_version"],
@@ -357,8 +442,8 @@ def build_master(
         "pool_id": pool_id,
         "input": {"archive_path": relative(archive_path, root), "archive_sha256": archive_descriptor["archive_sha256"], "selection": selection},
         "processing": {"stage_order": [stage["id"] for stage in spec["stages"]], "stages": stages},
-        "artifacts": {"sources": sources, "collections": collections, "regions": [], "cards": [], "reviews": []},
-        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "selected_member_count": len(selected)},
+        "artifacts": {"sources": sources, "collections": collections, "classifications": classification_decisions, "classification_features": classification_features, "classification_evaluations": classification_evaluations, "regions": classification_regions, "cards": [], "reviews": []},
+        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "classification_errors": len(classification_errors), "selected_member_count": len(selected)},
         "run": {"run_id": run_id, "started_at_utc": run_id.split("-", 1)[0], "until": until, "resume": resume},
     }
     errors = validate_master(master, spec)
@@ -379,15 +464,29 @@ def main() -> int:
     parser.add_argument("--pool", choices=sorted(ARCHIVES), required=True)
     parser.add_argument("--source")
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--until", choices=("archive", "sources", "collections"), default="sources")
+    parser.add_argument("--until", choices=("archive", "sources", "collections", "classification"), default="sources")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
+    parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL"))
+    parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME"))
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
     archive_path = ARCHIVES[args.pool]
     if not archive_path.is_file():
         parser.error(f"archive does not exist: {archive_path}")
-    master, master_path = build_master(load_spec(), args.pool, archive_path, args.source, args.limit, args.until, args.resume)
+    master, master_path = build_master(
+        load_spec(),
+        args.pool,
+        archive_path,
+        args.source,
+        args.limit,
+        args.until,
+        args.resume,
+        enable_llm=args.llm,
+        llm_endpoint=args.llm_endpoint,
+        llm_deployment=args.llm_deployment,
+    )
     print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": args.until, "sources": len(master["artifacts"]["sources"])}, ensure_ascii=False))
     return 0
 
