@@ -15,7 +15,42 @@ The current archives were inspected from their ZIP members, not inferred from fi
 | `original` | 31 | 31 `.jpg` | JPEG / RGB | 30 at `1275x1755`, 1 at `1148x1691` | 29 regular 3x3 card sheets, `hely1.jpg` mixed orientation/irregular layout, `tábla1.jpg` non-card board |
 | `children` | 50 | 50 `.jpg` | JPEG / RGB | 50 at `1162x1600` | individual-card source images; layout still requires classification |
 
-There are currently three processing layout families: regular card sheet, irregular or mixed-orientation collection, and individual card image. A fourth decision class, non-card content, is required because `tábla1.jpg` is an input image but must produce zero cards. There are no PNG, TIFF, BMP, WEBP, PDF, animated, grayscale, or corrupt image members in these two archives. The implementation still rejects unsupported types explicitly so a future archive cannot be silently misclassified.
+The current inputs show several observed layout patterns: regular 3x3 collections, irregular or mixed-orientation collections, and individual card images. These are observations, not routing classes. A separate `non_card` route is required because `tábla1.jpg` is an input image but must produce zero cards. There are no PNG, TIFF, BMP, WEBP, PDF, animated, grayscale, or corrupt image members in these two archives. The implementation still rejects unsupported types explicitly so a future archive cannot be silently misclassified.
+
+## Classification policy
+
+Classification produces a rich observation profile plus one automated routing decision. The routing vocabulary is intentionally small, but the observation profile is open-ended and must preserve all useful visual facts.
+
+The routing classes are:
+
+| Class | Routing meaning |
+|---|---|
+| `card_collection` | The source may contain multiple card regions; geometry comes from the observation profile, not from this route name. |
+| `individual_card` | One source image is one card; no sheet grid is applied. |
+| `non_card` | Readable input that is not quiz-card content; emits zero accepted regions. |
+| `unknown` | Evidence is insufficient for safe routing; emits zero accepted regions and remains pending for dependent stages. |
+
+The routing taxonomy is constrained only at the routing boundary. Each source also receives an `observation_profile` that may contain multiple content roles, such as `quiz_card_front`, `card_back`, and `game_board`, together with visual state, anomalies, feature summaries, candidate regions, and a layout pattern. The layout pattern may include `grid`, `single`, `irregular_regions`, `none`, or `unknown`, row and column counts, normalized row/column coefficients, and gap coefficients. A source can therefore be routed as `unknown` while still retaining useful facts such as “probable game board” or “probable card back.”
+
+Exactly one `routing_class` controls downstream geometry. `observation_profile` never silently promotes a source to a route, and model output never directly controls geometry. A new routing class requires a versioned contract change; a new visual variation or content role does not.
+
+Every source receives an immutable classification decision record containing its source and collection hashes, cell reference, dimensions, candidate routing classes and scores, routing_class, observation_profile, confidence, rule/configuration versions, model deployment/prompt/response hashes when used, reason, implementation version, and replay key. This record is the input for deterministic reprocessing when a rule, configuration, model, or prompt changes.
+
+### Layered classification execution
+
+Classification is a staged evidence process, not one unrestricted model call:
+
+1. **Source feature analysis** extracts deterministic signals from the source file: dimensions, aspect ratio, format/mode, borders, edge density, repeated separators, likely grid lines, and candidate region geometry. It creates a feature artifact keyed by the source hash and feature-rule version.
+2. **Collection-level visual evaluation** sends the labeled contact sheet and its manifest to the configured vision model. The model compares sources in context and returns candidate classes, scores, visual attributes, and anomaly hints. It does not directly route geometry.
+3. **First-level classification** deterministically fuses the feature artifact and collection evaluation. It emits exactly one `routing_class` or `unknown`, plus the rich `observation_profile`, candidate ranking, confidence, consistency checks, and exact replay key.
+4. **Unknown-source evaluation** sends only unresolved sources to the vision model with their source image, feature evidence, collection context, and first-level decision. The result is diagnostic evidence: candidate route hints, content-role observations, layout coefficient suggestions, missing-feature suggestions, and alternative explanations. It cannot directly promote a route.
+5. **Classification replay** runs the versioned deterministic fusion again with the diagnostic evidence. It writes a new immutable decision record and a decision delta. If the gates still do not pass, the source remains `unknown` and no regions are emitted.
+
+This design constrains routing without constraining discovery. The routing vocabulary remains small and stable, while content roles, candidate subtypes, anomaly descriptions, layout coefficients, model hints, and new feature proposals are preserved as evidence. A future subtype can therefore be studied and reprocessed without being silently treated as a known geometry.
+
+### Evidence required for later reprocessing
+
+For every source, persist the source-feature JSON, collection-evaluation request and response, first-level decision JSON, and, when applicable, unknown-source request/response and replay decision. Each artifact records input hashes, producer, implementation/rule/configuration/model versions, prompt and response hashes, candidate scores, selected/unknown class, confidence, consistency checks, and the preceding decision record hash. Reprocessing loads these artifacts by hash and creates a new decision event; it never edits the original evidence.
 
 ## Durable output structure
 
@@ -54,7 +89,7 @@ After each phase, the worker writes a checkpoint JSON report containing counts, 
 | Archive | Member count, suffix policy, archive hash, duplicate names, ZIP errors |
 | Source files | Materialized paths, decode status, dimensions, mode, source hashes, extraction safety |
 | Collections | Every source appears exactly once in a cell manifest; labels are readable; contact-sheet hash exists |
-| Classification/layout | Every source has exactly one layout decision; board/non-card has zero accepted regions; uncertain items are pending |
+| Classification/layout | Every source has exactly one current routing decision and rich observation profile; board/non-card observations have zero accepted regions; unknown items retain observations plus diagnostic and replay evidence |
 | Fine tuning/extraction | Coordinates are in bounds; accepted regions do not overlap unexpectedly; card IDs remain linked to source hash and geometry |
 | Orientation | Every accepted card has a transform and confidence; unknown orientation blocks OCR |
 | OCR | Raw OCR exists; structured fields link to raw evidence; confidence and parse warnings are present |
@@ -86,7 +121,7 @@ The default exploratory run should be `--pool original --limit 3 --until classif
 | ZIP archive | Archive path and file hash | Is the archive readable? Which members are eligible images? | Archive descriptor with hash, member list, byte sizes, archive errors | Every eligible member has stable identity |
 | Source files | Archive members | Can each image be opened? Dimensions, mode, hash, materialization path | One descriptor per source image | Every source file is addressable and decodable |
 | Collection images | Source image descriptors | Which images belong in each automated evaluation collection? | Labeled contact sheets with member-to-cell map | Deterministic completeness checks pass and automated model evaluation can consume the collection |
-| Page classification and basic layout estimation | Source images and collection evidence | `card_sheet_3x3`, `individual_card`, `mixed_orientation`, `non_card`, or `unknown`; estimate grid/regions | Per-source layout classification, geometry, confidence, evidence references | Only accepted regions proceed to fine tuning |
+| Page classification and basic layout estimation | Source images and collection evidence | One routing class plus open-ended observation profile; estimate grid/regions only when safe | Per-source routing decision, content roles, visual state, layout coefficients, region candidates, confidence, evidence, and replay key | Only accepted regions proceed to fine tuning; `unknown` emits none but retains observations |
 | Layout fine tuning | Classified source and estimated geometry | Crop bounds, excluded regions, rotation candidates, generated adjustments | Region proposals with coordinates, transform, confidence, decision provenance, and status | Every proposed card region is either accepted, rejected, or `model_review_pending` |
 | Card extraction | Accepted region proposals | Is the crop a standalone card? Stable card identity and source linkage | Standalone card image plus crop provenance | No rejected/non-card region becomes a card |
 | Orientation estimation | Standalone card images | Upright, clockwise, counter-clockwise, upside-down, mixed, or unknown | Orientation transform, confidence, and oriented image reference | OCR only sees accepted upright candidates or records pending orientation |
@@ -150,8 +185,8 @@ An unavailable prerequisite is recorded as `pending` with an issue, not as `avai
 1. **Contract layer**: add `pipeline_spec.json` and validate every master JSON against the stage contract.
 2. **Archive/source layer**: inventory ZIP members and materialized files with SHA-256 hashes; reuse records when hashes match.
 3. **Visual collection layer**: generate contact sheets with a cell manifest, not just image filenames.
-4. **Classification layer**: classify each source as card sheet, individual card, mixed orientation, non-card, or unknown; preserve evidence and confidence.
-5. **Geometry layer**: represent crop proposals as coordinates and transforms. Do not apply a generic 3x3 crop to a source classified otherwise.
+4. **Classification layer**: extract deterministic source features, evaluate labeled collections, fuse the evidence into one routing_class or `unknown` plus an observation profile, diagnose unknowns with source-level vision, and preserve immutable replay evidence.
+5. **Geometry layer**: represent crop proposals as coordinates and transforms. Do not apply a generic 3x3 crop unless the observation profile independently supports that geometry.
 6. **Card layer**: emit standalone images only for accepted proposals. Keep rejected candidates linked in the master JSON.
 7. **Orientation layer**: estimate orientation before OCR and record the transform used.
 8. **OCR layer**: keep raw OCR, structured text, confidence, line coordinates, and parse warnings together.
@@ -168,7 +203,7 @@ The cache key must include the content hash of every input artifact, not its pat
 
 | Failure we already saw | Prevention in the new pipeline | Recovery behavior |
 |---|---|---|
-| Applying a 3x3 grid to `hely1.jpg`, the board image, or child cards | Classification is a mandatory gate. Geometry is selected per source; `individual_card` has no grid crop, `non_card` emits no regions, and `mixed_orientation` requires explicit regions/transforms. | Keep the source and rejected proposals in the master JSON; do not delete old evidence. |
+| Applying a 3x3 grid to `hely1.jpg`, the board image, or child cards | Classification is a mandatory gate. Geometry is selected per source; `individual_card` has no collection grid, `non_card` emits no regions, and a `card_collection` with `mixed_orientation` observations requires explicit regions/transforms. | Keep the source and rejected proposals in the master JSON; do not delete old evidence. |
 | Generated card IDs becoming detached from source geometry | Card identity is derived from pool, source hash, region coordinates, and extraction version. Display sequence numbers are labels only. | Rebuild an affected descendant while preserving the prior record as a superseded artifact. |
 | OCR text looking structured while containing wrong characters or crop errors | Store raw OCR, word/line confidence, parser warnings, answer-boundary evidence, and a deterministic model-review flag. No low-confidence parse is silently promoted to verified. | Mark `model_review_pending`; send only the card evidence to the configured model. |
 | LLM output being malformed or progress text contaminating JSON | Store provider response and normalized review result separately; validate the result against a schema; write logs to stderr. | Keep the failed response, mark the review failed, and retry only with the same cache key after correction. |
@@ -207,7 +242,7 @@ The cache key must include the content hash of every input artifact, not its pat
 2. A second run with unchanged inputs performs no OCR or LLM request and marks reusable stages `cached`.
 3. Deleting only a derived card image makes card extraction and descendants `pending` without invalidating archive/source records.
 4. `tábla1.jpg` is `non_card` and produces zero accepted card regions.
-5. `hely1.jpg` is `mixed_orientation`; its affected regions remain reviewable and are never silently treated as ordinary grid cells.
+5. `hely1.jpg` routes as `card_collection` only if its observations support card regions; its `mixed_orientation` and irregular-layout observations remain reviewable and are never silently treated as ordinary grid cells.
 6. Child images are represented as individual-card sources and are not passed through a 3x3 crop.
 7. Every final Hungarian quiz record contains its source/card/image provenance, raw OCR, structured text, review status, and unresolved warnings.
 8. Invalid or incomplete LLM responses are retained as failed review events and cannot overwrite verified text.

@@ -133,11 +133,9 @@ def original_evaluation() -> dict[str, object]:
 def source_layout(pool_id: str, source_file: str) -> str:
     if pool_id == "original" and source_file == "tábla1.jpg":
         return "non_card_board"
-    if pool_id == "original" and source_file == "hely1.jpg":
-        return "mixed_orientation"
     if pool_id == "original":
-        return "card_sheet_3x3"
-    return "individual_image_review_required"
+        return "card_collection"
+    return "individual_card_candidate"
 
 
 def targeted_candidates(source_dir: Path, output_dir: Path, existing_json: Path | None) -> list[dict[str, object]]:

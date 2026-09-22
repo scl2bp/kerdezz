@@ -25,7 +25,7 @@ ARCHIVES = {
     "children": ROOT / "GyerekKérdezzFelelek.zip",
 }
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
-IMPLEMENTATION_VERSION = "archive-source-v1"
+IMPLEMENTATION_VERSION = "archive-source-collection-v1"
 NATURAL_PARTS = re.compile(r"(\d+)")
 CONTACT_COLUMNS = 4
 CONTACT_ROWS = 4
@@ -78,81 +78,90 @@ def atomic_bytes(path: Path, value: bytes) -> str:
     return sha256_file(path)
 
 
-def create_source_collection(
+def create_source_collections(
     sources: list[dict[str, Any]],
     pool_root: Path,
     root: Path,
-) -> tuple[dict[str, Any] | None, list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     if not sources:
-        return None, ["no materialized sources available for collection"]
+        return [], ["no materialized sources available for collection"]
     collection_dir = pool_root / "collections" / "source"
     collection_dir.mkdir(parents=True, exist_ok=True)
-    collection_path = collection_dir / "source_collection_001.jpg"
-    manifest_path = collection_dir / "source_collection_001.json"
     cell_width = THUMBNAIL_SIZE[0]
     cell_height = THUMBNAIL_SIZE[1] + LABEL_HEIGHT
-    canvas = Image.new("RGB", (CONTACT_COLUMNS * cell_width, CONTACT_ROWS * cell_height), "white")
     from PIL import ImageDraw, ImageFont, ImageOps
 
-    draw = ImageDraw.Draw(canvas)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     label_font = ImageFont.truetype(font_path, 18) if Path(font_path).is_file() else ImageFont.load_default()
-    cells: list[dict[str, Any]] = []
+    collections: list[dict[str, Any]] = []
     errors: list[str] = []
-    for index, source in enumerate(sources):
-        if source.get("status") != "available":
-            errors.append(f"{source.get('member_name', source.get('source_id'))}: source is not available")
+    per_sheet = CONTACT_COLUMNS * CONTACT_ROWS
+    for sheet_index, start in enumerate(range(0, len(sources), per_sheet), start=1):
+        batch = sources[start : start + per_sheet]
+        collection_id = f"source_collection_{sheet_index:03d}"
+        collection_path = collection_dir / f"{collection_id}.jpg"
+        manifest_path = collection_dir / f"{collection_id}.json"
+        canvas = Image.new("RGB", (CONTACT_COLUMNS * cell_width, CONTACT_ROWS * cell_height), "white")
+        draw = ImageDraw.Draw(canvas)
+        cells: list[dict[str, Any]] = []
+        for local_index, source in enumerate(batch):
+            if source.get("status") != "available":
+                errors.append(f"{source.get('member_name', source.get('source_id'))}: source is not available")
+                continue
+            source_path = root / source["path"]
+            try:
+                with Image.open(source_path) as image:
+                    preview = ImageOps.contain(image.convert("RGB"), THUMBNAIL_SIZE)
+                column = local_index % CONTACT_COLUMNS
+                row = local_index // CONTACT_COLUMNS
+                x = column * cell_width
+                y = row * cell_height
+                left = x + (cell_width - preview.width) // 2
+                top = y + (THUMBNAIL_SIZE[1] - preview.height) // 2
+                canvas.paste(preview, (left, top))
+                draw.rectangle((x, y + THUMBNAIL_SIZE[1], x + cell_width, y + cell_height), fill="#e9eef5")
+                label = f"{start + local_index + 1:03d} {source['member_name']}"
+                draw.text((x + 8, y + THUMBNAIL_SIZE[1] + 10), label[:34], fill="#101820", font=label_font)
+                cells.append(
+                    {
+                        "cell_index": local_index,
+                        "source_index": start + local_index,
+                        "row": row,
+                        "column": column,
+                        "label": label,
+                        "source_id": source["source_id"],
+                        "member_name": source["member_name"],
+                        "source_path": source["path"],
+                        "source_sha256": source["file_sha256"],
+                    }
+                )
+            except (OSError, ValueError) as error:
+                errors.append(f"{source.get('member_name', source.get('source_id'))}: {error}")
+        if not cells:
             continue
-        source_path = root / source["path"]
-        try:
-            with Image.open(source_path) as image:
-                preview = ImageOps.contain(image.convert("RGB"), THUMBNAIL_SIZE)
-            column = index % CONTACT_COLUMNS
-            row = index // CONTACT_COLUMNS
-            x = column * cell_width
-            y = row * cell_height
-            left = x + (cell_width - preview.width) // 2
-            top = y + (THUMBNAIL_SIZE[1] - preview.height) // 2
-            canvas.paste(preview, (left, top))
-            draw.rectangle((x, y + THUMBNAIL_SIZE[1], x + cell_width, y + cell_height), fill="#e9eef5")
-            label = f"{index + 1:03d} {source['member_name']}"
-            draw.text((x + 8, y + THUMBNAIL_SIZE[1] + 10), label[:34], fill="#101820", font=label_font)
-            cells.append(
-                {
-                    "cell_index": index,
-                    "row": row,
-                    "column": column,
-                    "label": label,
-                    "source_id": source["source_id"],
-                    "member_name": source["member_name"],
-                    "source_path": source["path"],
-                    "source_sha256": source["file_sha256"],
-                }
-            )
-        except (OSError, ValueError) as error:
-            errors.append(f"{source.get('member_name', source.get('source_id'))}: {error}")
-    if errors:
-        return None, errors
-    canvas.save(collection_path, quality=93, optimize=True)
-    manifest = {
-        "collection_id": "source_collection_001",
-        "collection_type": "source_contact_sheet",
-        "image_path": relative(collection_path, root),
-        "image_sha256": sha256_file(collection_path),
-        "columns": CONTACT_COLUMNS,
-        "rows": CONTACT_ROWS,
-        "cell_count": len(cells),
-        "cells": cells,
-    }
-    atomic_json(manifest_path, manifest)
-    return {
-        "collection_id": manifest["collection_id"],
-        "image_path": manifest["image_path"],
-        "image_sha256": manifest["image_sha256"],
-        "manifest_path": relative(manifest_path, root),
-        "manifest_sha256": sha256_file(manifest_path),
-        "source_count": len(cells),
-    }, []
+        canvas.save(collection_path, quality=93, optimize=True)
+        manifest = {
+            "collection_id": collection_id,
+            "collection_type": "source_contact_sheet",
+            "image_path": relative(collection_path, root),
+            "image_sha256": sha256_file(collection_path),
+            "columns": CONTACT_COLUMNS,
+            "rows": CONTACT_ROWS,
+            "cell_count": len(cells),
+            "cells": cells,
+        }
+        atomic_json(manifest_path, manifest)
+        collections.append(
+            {
+                "collection_id": manifest["collection_id"],
+                "image_path": manifest["image_path"],
+                "image_sha256": manifest["image_sha256"],
+                "manifest_path": relative(manifest_path, root),
+                "manifest_sha256": sha256_file(manifest_path),
+                "source_count": len(cells),
+            }
+        )
+    return collections, errors
 
 
 def safe_member_name(name: str) -> tuple[str | None, str | None]:
@@ -331,10 +340,9 @@ def build_master(
     collection_errors: list[str] = []
     if until == "collections":
         collection_started = utc_now()
-        collection, collection_errors = create_source_collection(sources, pool_root, root)
-        collection_status = "available" if collection and not collection_errors else "failed"
+        collections, collection_errors = create_source_collections(sources, pool_root, root)
+        collection_status = "available" if collections and not collection_errors else "failed"
         collection_stage = make_stage(spec["stages"][2], collection_status, reason="source contact sheet and cell manifest are available" if collection_status == "available" else "collection creation failed", run_id=run_id, started=collection_started)
-        collections = [collection] if collection else []
         collection_stage["input"] = {"artifact_refs": [{"stage_id": "source_files", "fingerprint": source_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][2]["input"], "fingerprint": source_stage["outputs"]["fingerprint"]}
         collection_stage["evaluation"] = {"method": "deterministic labeled contact-sheet generation", "rules": ["every available source appears once", "source hash copied into cell manifest", "contact-sheet and manifest hashes recorded"], "decisions": ["collection grouping"]}
         collection_stage["outputs"] = {"artifact_refs": [{"path": item["image_path"], "sha256": item["image_sha256"]} for item in collections] + [{"path": item["manifest_path"], "sha256": item["manifest_sha256"]} for item in collections], "records": collections, "fingerprint": object_hash(collections)}

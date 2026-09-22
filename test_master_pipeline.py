@@ -63,3 +63,17 @@ def test_collection_phase_creates_contact_sheet_and_cell_manifest(tmp_path: Path
     assert collection["source_count"] == 2
     assert manifest["cell_count"] == 2
     assert len(manifest["cells"]) == 2
+
+
+def test_collection_phase_paginates_sources_across_contact_sheets(tmp_path: Path) -> None:
+    archive = tmp_path / "probe.zip"
+    image_path = tmp_path / "card.jpg"
+    Image.new("RGB", (20, 30), "white").save(image_path)
+    with zipfile.ZipFile(archive, "w") as output:
+        for index in range(17):
+            output.write(image_path, f"card{index + 1}.jpg")
+
+    master, _ = build_master(load_spec(), "original", archive, None, None, "collections", False, tmp_path)
+    collections = master["artifacts"]["collections"]
+    assert len(collections) == 2
+    assert [item["source_count"] for item in collections] == [16, 1]

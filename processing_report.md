@@ -1,13 +1,13 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-22T18:39:55+00:00`
+Generated: `2026-09-22T18:47:29+00:00`
 
 ## Executive outcome
 
 - Contract validation: **PASS**
 - Processing masters found: **1** of 2 expected pools
 - Pipeline stages defined: **9**
-- Pipeline stage records attempted: **2**
+- Pipeline stage records attempted: **3**
 - Current boundary: status below reflects the available pool master artifacts.
 
 ## KPI summary
@@ -19,11 +19,11 @@ Generated: `2026-09-22T18:39:55+00:00`
 | Region proposals | 0 |
 | Card artifacts | 0 |
 | Review artifacts | 0 |
-| Unexecuted planned stages | 7 |
+| Unexecuted planned stages | 6 |
 | Stage records present | 9 |
-| Available stages | 2 |
+| Available stages | 3 |
 | Cached stages | 0 |
-| Pending stages | 7 |
+| Pending stages | 6 |
 | Model-review pending stages | 0 |
 | Model-uncertain stages | 0 |
 | Rejected stages | 0 |
@@ -31,17 +31,17 @@ Generated: `2026-09-22T18:39:55+00:00`
 
 ## Stage status
 
-| Phase | Stage ID | Status |
-|---|---|---|
-| ZIP archive | `zip_archive` | available: 1 |
-| Source files | `source_files` | available: 1 |
-| Collection images | `collection_images` | pending: 1 |
-| Page classification and basic layout estimation | `page_classification` | pending: 1 |
-| Layout fine tuning | `layout_fine_tuning` | pending: 1 |
-| Card extraction | `card_extraction` | pending: 1 |
-| Orientation estimation | `orientation_estimation` | pending: 1 |
-| OCR extraction | `ocr_extraction` | pending: 1 |
-| LLM review and refinement | `llm_review` | pending: 1 |
+| Phase | Stage ID | Status | Scope |
+|---|---|---|---|
+| ZIP archive | `zip_archive` | available: 1 | 31 members, 3 selected |
+| Source files | `source_files` | available: 1 | 3 sources |
+| Collection images | `collection_images` | available: 1 | 3 source cells |
+| Page classification and basic layout estimation | `page_classification` | pending: 1 |  |
+| Layout fine tuning | `layout_fine_tuning` | pending: 1 |  |
+| Card extraction | `card_extraction` | pending: 1 |  |
+| Orientation estimation | `orientation_estimation` | pending: 1 |  |
+| OCR extraction | `ocr_extraction` | pending: 1 |  |
+| LLM review and refinement | `llm_review` | pending: 1 |  |
 
 ## Pool coverage
 
@@ -58,7 +58,7 @@ Generated: `2026-09-22T18:39:55+00:00`
 
 ## Next gate
 
-Implement and run the `collection_images` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
+Implement and run the `page_classification` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
 
 ## Source artifacts
 

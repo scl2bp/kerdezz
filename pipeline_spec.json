@@ -26,6 +26,106 @@
     "started_at_utc",
     "completed_at_utc"
   ],
+  "classification_policy": {
+  "routing_classes": {
+      "card_collection": "A source containing multiple possible card regions; the observation profile determines the actual geometry.",
+      "individual_card": "A source image representing one card rather than a multi-card collection.",
+      "non_card": "A readable source that is not quiz-card content, such as a board image.",
+      "unknown": "A source for which the available evidence is insufficient for a safe routing decision."
+    },
+  "routing_rule": "Exactly one routing_class may control downstream geometry. Unknown produces no accepted regions and blocks dependent stages for that source, while preserving all observations and region candidates.",
+  "open_set_rule": "The classifier must prefer unknown over a low-confidence or out-of-taxonomy routing result. New visual roles, subtypes, anomalies, and layout patterns are recorded in observation_profile without changing routing until a versioned contract change adds a routing class.",
+  "classification_output": {
+    "routing_class": "Exactly one routing_classes value; this is the only field allowed to select downstream geometry.",
+    "observation_profile": {
+    "content_roles": "One or more descriptive roles, including quiz_card_front, card_back, game_board, text_page, photo, decorative, mixed_content, or unknown.",
+    "visual_state": "front, back, mixed, unreadable, or unknown.",
+    "layout_pattern": {
+      "family": "grid, single, irregular_regions, none, or unknown.",
+      "row_count": "Integer estimate or null.",
+      "column_count": "Integer estimate or null.",
+      "row_coefficient": "Normalized usable-height share per row, or null when no row model is credible.",
+      "column_coefficient": "Normalized usable-width share per column, or null when no column model is credible.",
+      "row_gap_coefficient": "Normalized vertical gap estimate, or null.",
+      "column_gap_coefficient": "Normalized horizontal gap estimate, or null.",
+      "confidence": "Confidence in the layout pattern and coefficients.",
+      "coordinate_system": "Normalized image coordinates in [0, 1]."
+    },
+    "region_candidates": "Zero or more normalized region proposals with role, coordinates, transform, producer, and confidence.",
+    "anomalies": "Structured observations such as game_board, card_back, mixed_orientation, border_noise, or non_uniform_spacing.",
+    "feature_summary": "Deterministic and model-supported visual facts retained for later analysis."
+    }
+  },
+    "decision_states": ["accepted", "model_review_pending", "model_uncertain", "failed"],
+    "classification_layers": [
+      {
+        "id": "source_feature_analysis",
+        "producer": "deterministic implementation",
+        "purpose": "Extract reproducible image and file features without a model call.",
+        "inputs": ["source image", "source descriptor"],
+      "outputs": ["dimensions", "aspect ratio", "format and mode", "edge and border signals", "grid and region candidates", "layout coefficients", "content-role signals", "feature fingerprint"],
+        "may_select_class": false,
+        "cache_key": ["source_sha256", "feature_rules_version", "implementation_version"]
+      },
+      {
+        "id": "collection_visual_evaluation",
+        "producer": "automated vision model",
+        "purpose": "Use the labeled contact sheet to compare sources and identify collection-level visual patterns.",
+        "inputs": ["collection image", "collection manifest", "source feature summaries"],
+      "outputs": ["per-source routing candidates", "candidate scores", "observation roles", "layout pattern hints", "anomaly hints", "response evidence"],
+        "may_select_class": false,
+        "cache_key": ["collection_image_sha256", "collection_manifest_hash", "source_feature_fingerprint", "model_deployment", "model_prompt_hash", "implementation_version"]
+      },
+      {
+        "id": "first_level_classification",
+        "producer": "deterministic fusion rules",
+        "purpose": "Fuse source features and collection evaluation into the first routing decision.",
+        "inputs": ["source feature analysis", "collection visual evaluation"],
+      "outputs": ["one routing_class", "observation_profile", "candidate ranking", "confidence", "consistency checks", "decision reason", "replay key"],
+        "may_select_class": true,
+        "cache_key": ["source_feature_fingerprint", "collection_evaluation_fingerprint", "classification_rules_version", "configuration_hash", "implementation_version"]
+      },
+      {
+        "id": "unknown_source_evaluation",
+        "producer": "automated vision model",
+        "purpose": "Diagnose only sources that remain unknown after first-level fusion and provide evidence for later reprocessing.",
+        "inputs": ["source image", "source feature analysis", "collection evaluation", "first-level decision record"],
+      "outputs": ["candidate routing hints", "observation roles", "layout coefficient suggestions", "missing-feature suggestions", "alternative explanations", "model uncertainty", "response evidence"],
+        "may_select_class": false,
+        "selection_rule": "Run only when the first-level routing_class is unknown or its decision state is model_review_pending.",
+        "cache_key": ["source_sha256", "source_feature_fingerprint", "collection_evaluation_fingerprint", "decision_record_hash", "model_deployment", "model_prompt_hash", "implementation_version"]
+      },
+      {
+        "id": "classification_replay",
+        "producer": "deterministic fusion rules",
+        "purpose": "Re-run classification with diagnostic hints as additional evidence without changing the original decision record.",
+        "inputs": ["all prior classification evidence", "unknown source evaluation"],
+      "outputs": ["new immutable decision record", "one routing_class or unknown", "updated observation_profile", "decision delta", "new replay key"],
+        "may_select_class": true,
+        "cache_key": ["prior_decision_record_hash", "unknown_evaluation_fingerprint", "classification_rules_version", "configuration_hash", "implementation_version"]
+      }
+    ],
+    "unknown_handling": {
+      "initial_route": "unknown emits zero accepted regions and blocks only dependent geometry and extraction for that source, but retains all feature, role, anomaly, and layout observations",
+    "diagnostic_route": "unknown_source_evaluation runs automatically and produces diagnostic observations and hints, never an authoritative routing class",
+      "replay_route": "classification_replay may accept a routing_class or retain unknown",
+      "persistence": "Every layer is stored as an immutable artifact with input hashes, producer/version, scores, response hashes, and replay key",
+      "no_forced_class": "A source remains unknown when deterministic fusion cannot meet the configured confidence and consistency gates"
+    },
+    "required_evidence": [
+      "source_id",
+      "source_sha256",
+      "collection_id and cell reference",
+      "dimensions and mode",
+    "candidate routing classes and scores",
+      "routing_class and confidence",
+      "deterministic rule IDs and configuration hash",
+      "model deployment, prompt hash, and response hash when model evaluation runs",
+      "decision reason and implementation version",
+      "classification layer, producer, layer input fingerprint, and prior decision reference"
+    ],
+    "reprocessing_key": ["source_sha256", "collection_manifest_hash", "deterministic_rules_version", "configuration_hash", "model_deployment", "model_prompt_hash", "implementation_version"]
+  },
   "stages": [
     {
       "id": "zip_archive",
@@ -64,12 +164,12 @@
       "id": "page_classification",
       "name": "Page classification and basic layout estimation",
       "input": ["source_files", "collection_images"],
-      "requires": ["layout class", "estimated regions or individual-image status", "confidence", "evidence refs"],
-      "decisions": ["card_sheet_3x3", "individual_card", "mixed_orientation", "non_card", "unknown"],
-      "outputs": ["page descriptors", "initial region proposals"],
-      "failure_modes": ["ambiguous layout", "unsupported orientation", "non-card page"],
+      "requires": ["one routing_class", "observation profile", "layout pattern", "row and column coefficients", "region candidates", "confidence", "evidence refs"],
+      "decisions": ["routing class", "candidate scores", "content roles", "visual state", "layout pattern", "row and column coefficients", "anomalies", "decision state"],
+      "outputs": ["page descriptors", "observation profiles", "initial region proposals", "per-source classification decision records", "source feature evidence", "collection evaluation evidence", "unknown diagnostics", "replay evidence"],
+      "failure_modes": ["ambiguous layout", "unsupported orientation", "non-card page", "low-confidence classification", "out-of-taxonomy model output"],
       "handoff": "layout_fine_tuning",
-      "cache_key": ["source_hash", "classification_parameters", "implementation_version"]
+      "cache_key": ["source_hash", "collection_manifest_hash", "deterministic_rules_version", "configuration_hash", "model_deployment", "model_prompt_hash", "implementation_version"]
     },
     {
       "id": "layout_fine_tuning",
