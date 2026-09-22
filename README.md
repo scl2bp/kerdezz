@@ -31,17 +31,16 @@ Create labeled miniature collections and input metadata without rerunning OCR:
 ```bash
 python review_assets.py \
 	--archive KerdezzFelelek_ALAP.zip \
-	--source-dir kerdezz/source \
-	--output kerdezz/output \
-	--pool-id kerdezz \
-	--existing-json kerdezz/cards.json
+	--source-dir source \
+	--output review/original \
+	--pool-id original \
+	--existing-json output/cards.json
 
 python review_assets.py \
 	--archive GyerekKérdezzFelelek.zip \
-	--source-dir gyerek/source \
-	--output gyerek/output \
-	--pool-id gyerek \
-	--existing-json gyerek/cards.json
+	--source-dir child_source \
+	--output review/children \
+	--pool-id children
 ```
 
 The review output contains labeled source contact sheets, card contact sheets for the existing pool, and `input_source_metadata.json`. Existing card records are treated as cached; only explicitly flagged images or new source pools should be sent for further LLM evaluation.
@@ -54,12 +53,20 @@ python llm_usage.py \
 	--cache review/llm_cache.json
 ```
 
-## Pipeline ledger and artifact database
+## Processing master JSON (planned implementation)
 
-Build the complete top-to-bottom lineage without repeating sufficient work:
+The target artifact is one hierarchical master JSON per input archive. The implementation plan and machine-readable stage contract are available here:
+
+See [pipeline_implementation_plan.md](pipeline_implementation_plan.md) for the stage contracts, failure prevention, recovery behavior, and acceptance criteria. See [pipeline_spec.json](pipeline_spec.json) for the machine-readable contract.
+
+The master builder is not implemented yet. The existing `pipeline.py` is a legacy SQLite-oriented ledger and must not be treated as the authoritative output. Once the master builder exists, it will create one JSON per pool with stage inputs, decisions, outputs, quality state, handoffs, source provenance, cards, and Hungarian quiz text. A stage will be marked `cached` only when its prior valid output has the same content-based cache key.
+
+## Processing report
+
+Generate the single presentation report for the whole pipeline with:
 
 ```bash
-python pipeline.py
+python generate_processing_report.py
 ```
 
-This writes one JSON document per stage under `pipeline/<pool>/stages/` and updates `output/artifact_database.sqlite3`. The database stores card category, answer, every clue, combined quiz text, raw OCR, image provenance, stage fingerprints, and cached LLM review records. A stage is marked `cached` when its input payload and parameters have not changed.
+The command writes [processing_report.md](processing_report.md). It reads the contract and any `pipeline/<pool>/processing_master.json` files, then reports contract validity, stage statuses, pool coverage, source/region/card/review counts, cache and failure counts, and the next automated gate. The report distinguishes validated planning from processing that has actually executed.

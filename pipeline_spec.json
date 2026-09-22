@@ -1,0 +1,131 @@
+{
+  "schema_version": "2.0",
+  "artifact_type": "quiz_pool_processing_master",
+  "status_values": ["pending", "available", "cached", "model_review_pending", "model_uncertain", "verified", "rejected", "failed"],
+  "status_meanings": {
+    "pending": "A prerequisite or implementation is not available yet.",
+    "available": "The stage ran and produced usable output.",
+    "cached": "A prior usable output was reused because its cache key is unchanged.",
+    "model_review_pending": "The output exists and is queued for automated model evaluation.",
+    "model_uncertain": "Automated model evaluation completed but could not make a sufficiently confident decision.",
+    "verified": "The output passed the configured quality gate.",
+    "rejected": "The input was evaluated and excluded with evidence.",
+    "failed": "Execution was attempted but did not produce a valid output."
+  },
+  "required_stage_record_fields": [
+    "stage_id",
+    "stage_name",
+    "implementation_version",
+    "status",
+    "cache",
+    "input",
+    "evaluation",
+    "outputs",
+    "quality",
+    "handoff",
+    "started_at_utc",
+    "completed_at_utc"
+  ],
+  "stages": [
+    {
+      "id": "zip_archive",
+      "name": "ZIP archive",
+      "input": ["archive_path"],
+      "requires": ["readable ZIP", "archive SHA-256"],
+      "decisions": ["eligible image members", "unsupported or corrupt members"],
+      "outputs": ["archive descriptor", "member descriptors", "member hashes"],
+      "failure_modes": ["missing archive", "invalid ZIP", "duplicate member identity"],
+      "handoff": "source_files",
+      "cache_key": ["archive_sha256", "implementation_version"]
+    },
+    {
+      "id": "source_files",
+      "name": "Source files",
+      "input": ["zip_archive.member_descriptors"],
+      "requires": ["materialized path", "decodable image", "dimensions", "mode", "SHA-256"],
+      "decisions": ["file readable", "file identity stable"],
+      "outputs": ["source image descriptors"],
+      "failure_modes": ["decode error", "path traversal", "hash mismatch"],
+      "handoff": "collection_images",
+      "cache_key": ["member_sha256", "materialization_parameters", "implementation_version"]
+    },
+    {
+      "id": "collection_images",
+      "name": "Collection images",
+      "input": ["source_files.source_image_descriptors"],
+      "requires": ["cell label", "source-to-cell map", "contact sheet hash"],
+      "decisions": ["collection grouping"],
+      "outputs": ["labeled contact sheets", "collection manifests"],
+      "failure_modes": ["missing source", "stale contact sheet", "unmapped cell"],
+      "handoff": "page_classification",
+      "cache_key": ["source_hashes", "thumbnail_parameters", "implementation_version"]
+    },
+    {
+      "id": "page_classification",
+      "name": "Page classification and basic layout estimation",
+      "input": ["source_files", "collection_images"],
+      "requires": ["layout class", "estimated regions or individual-image status", "confidence", "evidence refs"],
+      "decisions": ["card_sheet_3x3", "individual_card", "mixed_orientation", "non_card", "unknown"],
+      "outputs": ["page descriptors", "initial region proposals"],
+      "failure_modes": ["ambiguous layout", "unsupported orientation", "non-card page"],
+      "handoff": "layout_fine_tuning",
+      "cache_key": ["source_hash", "classification_parameters", "implementation_version"]
+    },
+    {
+      "id": "layout_fine_tuning",
+      "name": "Layout fine tuning",
+      "input": ["page_classification.region_proposals"],
+      "requires": ["coordinates", "rotation candidates", "excluded regions", "review status"],
+      "decisions": ["accepted region", "rejected region", "pending region", "transform"],
+      "outputs": ["final crop proposals"],
+      "failure_modes": ["out-of-bounds crop", "overlapping proposals", "automated model decision pending"],
+      "handoff": "card_extraction",
+      "cache_key": ["classification_fingerprint", "generated_adjustments", "geometry_parameters", "implementation_version"],
+      "decision_provenance": ["configuration_version", "deterministic_rules_version", "vision_model_version", "input_fingerprint"]
+    },
+    {
+      "id": "card_extraction",
+      "name": "Card extraction",
+      "input": ["layout_fine_tuning.accepted_regions"],
+      "requires": ["standalone image", "source linkage", "region linkage", "image hash"],
+      "decisions": ["is_card", "accepted", "rejected"],
+      "outputs": ["card image artifacts", "card descriptors"],
+      "failure_modes": ["missing source", "write failure", "non-card crop"],
+      "handoff": "orientation_estimation",
+      "cache_key": ["source_hash", "region_coordinates", "transform", "implementation_version"]
+    },
+    {
+      "id": "orientation_estimation",
+      "name": "Orientation estimation",
+      "input": ["card_extraction.card_images"],
+      "requires": ["orientation", "transform", "confidence", "evidence"],
+      "decisions": ["upright", "clockwise", "counter_clockwise", "upside_down", "mixed", "unknown"],
+      "outputs": ["oriented card image refs", "orientation records"],
+      "failure_modes": ["ambiguous orientation", "transform failure", "missing card image"],
+      "handoff": "ocr_extraction",
+      "cache_key": ["card_image_hash", "orientation_parameters", "implementation_version"]
+    },
+    {
+      "id": "ocr_extraction",
+      "name": "OCR extraction",
+      "input": ["orientation_estimation.oriented_card_images"],
+      "requires": ["language", "OCR engine", "raw OCR", "line coordinates", "confidence", "parse status"],
+      "decisions": ["category", "ordered clues", "answer boundary", "text warnings"],
+      "outputs": ["structured quiz text", "raw OCR", "OCR evidence"],
+      "failure_modes": ["missing language data", "empty OCR", "parse ambiguity"],
+      "handoff": "llm_review",
+      "cache_key": ["oriented_image_hash", "OCR_parameters", "implementation_version"]
+    },
+    {
+      "id": "llm_review",
+      "name": "LLM review and refinement",
+      "input": ["ocr_extraction.pending_or_flagged", "visual evidence refs"],
+      "requires": ["prompt hash", "model/deployment", "image hash", "response cache key"],
+      "decisions": ["accept automated correction", "reject automated correction", "model_uncertain", "model_review_failed"],
+      "outputs": ["review event", "accepted fields", "final card status"],
+      "failure_modes": ["authentication failure", "malformed response", "schema validation failure", "timeout"],
+      "handoff": "final_artifacts",
+      "cache_key": ["image_hash", "prompt_hash", "deployment", "review_parameters", "implementation_version"]
+    }
+  ]
+}
