@@ -45,6 +45,20 @@ def test_source_phase_materializes_and_records_image_metadata(tmp_path: Path) ->
     assert master["processing"]["stages"][1]["status"] == "available"
 
 
+def test_fine_tuning_phase_materializes_classification_prerequisites(tmp_path: Path) -> None:
+    archive = tmp_path / "probe.zip"
+    image_path = tmp_path / "card1.jpg"
+    Image.new("RGB", (20, 30), "white").save(image_path)
+    with zipfile.ZipFile(archive, "w") as output:
+        output.write(image_path, "card1.jpg")
+
+    master, _ = build_master(load_spec(), "original", archive, None, 1, "fine_tuning", False, tmp_path)
+
+    assert len(master["artifacts"]["sources"]) == 1
+    assert master["processing"]["stages"][1]["status"] == "available"
+    assert master["processing"]["stages"][2]["status"] == "available"
+
+
 def test_collection_phase_creates_contact_sheet_and_cell_manifest(tmp_path: Path) -> None:
     archive = tmp_path / "probe.zip"
     image_paths = []

@@ -17,7 +17,9 @@ from typing import Any
 from PIL import Image
 
 from classification import classify_sources
+from card_extraction import extract_cards
 from contract_validator import validate_master
+from layout_fine_tuning import fine_tune_layouts
 
 
 ROOT = Path(__file__).parent
@@ -329,7 +331,7 @@ def build_master(
     source_stage = make_stage(spec["stages"][1], "pending", reason="source phase not selected", run_id=run_id)
     sources: list[dict[str, Any]] = []
     source_errors: list[str] = []
-    if until in ("sources", "collections", "classification"):
+    if until in ("sources", "collections", "classification", "fine_tuning", "card_extraction"):
         source_started = utc_now()
         sources, source_errors = materialize_sources(archive_path, pool_root, selected, root)
         source_status = "available" if not source_errors else "failed"
@@ -342,7 +344,7 @@ def build_master(
     collection_stage = make_stage(spec["stages"][2], "pending", reason="collection phase not selected", run_id=run_id)
     collections: list[dict[str, Any]] = []
     collection_errors: list[str] = []
-    if until in ("collections", "classification"):
+    if until in ("collections", "classification", "fine_tuning", "card_extraction"):
         collection_started = utc_now()
         collections, collection_errors = create_source_collections(sources, pool_root, root)
         collection_status = "available" if collections and not collection_errors else "failed"
@@ -359,7 +361,7 @@ def build_master(
     classification_artifacts: list[dict[str, Any]] = []
     classification_regions: list[dict[str, Any]] = []
     classification_errors: list[str] = []
-    if until == "classification":
+    if until in ("classification", "fine_tuning", "card_extraction"):
         classification_started = utc_now()
         if collection_stage["status"] != "available":
             classification_stage = make_stage(spec["stages"][3], "pending", reason="classification blocked by collection phase", run_id=run_id, started=classification_started)
@@ -374,16 +376,16 @@ def build_master(
                 deployment=llm_deployment,
             )
             decision_by_source = {decision["source_id"]: decision for decision in classification_decisions}
-            for source in sources:
-                decision = decision_by_source.get(source["source_id"])
+            for source_descriptor in sources:
+                decision = decision_by_source.get(source_descriptor["source_id"])
                 if decision:
-                    source["classification"] = decision
+                    source_descriptor["classification"] = decision
                     for candidate in decision["observation_profile"]["region_candidates"]:
                         if candidate.get("accepted"):
                             region = dict(candidate)
-                            region["region_id"] = f"{source['source_id']}:{candidate['region_id']}"
-                            region["source_id"] = source["source_id"]
-                            region["source_sha256"] = source["file_sha256"]
+                            region["region_id"] = f"{source_descriptor['source_id']}:{candidate['region_id']}"
+                            region["source_id"] = source_descriptor["source_id"]
+                            region["source_sha256"] = source_descriptor["file_sha256"]
                             region["classification_decision_ref"] = decision["artifact_ref"]
                             classification_regions.append(region)
             classification_status = "available" if classification_decisions and not classification_errors else "failed"
@@ -433,8 +435,58 @@ def build_master(
                 "rejected_refs": [item["source_id"] for item in classification_decisions if item["routing_class"] == "non_card"],
                 "reason": "only card_collection region candidates proceed to geometry; individual_card proceeds without a sheet grid",
             }
-    stages = [archive_stage, source_stage, collection_stage, classification_stage]
-    for stage in spec["stages"][4:]:
+    layout_stage = make_stage(spec["stages"][4], "pending", reason="layout fine-tuning phase not selected", run_id=run_id)
+    layout_proposals: list[dict[str, Any]] = []
+    layout_artifacts: list[dict[str, Any]] = []
+    layout_errors: list[str] = []
+    if until in ("fine_tuning", "card_extraction"):
+        layout_started = utc_now()
+        if classification_stage["status"] != "available":
+            layout_stage = make_stage(spec["stages"][4], "pending", reason="layout fine-tuning blocked by classification phase", run_id=run_id, started=layout_started)
+        else:
+            layout_proposals, layout_artifacts, layout_errors = fine_tune_layouts(sources, classification_decisions, root, pool_root)
+            layout_status = "available" if layout_proposals and not layout_errors else ("available" if not layout_errors else "failed")
+            layout_stage = make_stage(
+                spec["stages"][4],
+                layout_status,
+                reason="validated region proposals are available" if layout_status == "available" else "one or more region proposals failed validation",
+                run_id=run_id,
+                started=layout_started,
+            )
+            layout_input_fingerprint = object_hash({"classification": classification_stage["outputs"]["fingerprint"], "rules": "normalized-bounds-overlap-v1"})
+            layout_stage["cache"] = {"key": layout_input_fingerprint, "parameters": {}, "reused": False, "source_stage_run": None}
+            layout_stage["input"] = {"artifact_refs": [{"stage_id": "page_classification", "fingerprint": classification_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][4]["input"], "fingerprint": layout_input_fingerprint}
+            layout_stage["evaluation"] = {"method": "deterministic normalized geometry validation", "rules": ["coordinates are in [0, 1]", "pixel coordinates are in source bounds", "unexpected overlap is rejected", "unknown and non_card emit no proposals"], "decisions": ["accepted region", "rejected region", "rotation candidates", "pixel crop bounds"]}
+            layout_stage["outputs"] = {"artifact_refs": layout_artifacts, "records": layout_proposals, "fingerprint": object_hash(layout_proposals)}
+            layout_stage["quality"] = {"confidence": round(sum(item.get("confidence", 0.0) for item in layout_proposals) / len(layout_proposals), 6) if layout_proposals else 0.0, "review_required": False, "errors": layout_errors, "warnings": [], "proposal_count": len(layout_proposals)}
+            layout_stage["handoff"] = {"accepted_refs": [item["region_id"] for item in layout_proposals], "pending_refs": [], "rejected_refs": [], "reason": "accepted region proposals are ready for card extraction"}
+    card_stage = make_stage(spec["stages"][5], "pending", reason="card extraction phase not selected", run_id=run_id)
+    cards: list[dict[str, Any]] = []
+    card_artifacts: list[dict[str, str]] = []
+    card_errors: list[str] = []
+    if until == "card_extraction":
+        extraction_started = utc_now()
+        if layout_stage["status"] != "available":
+            card_stage = make_stage(spec["stages"][5], "pending", reason="card extraction blocked by layout fine tuning", run_id=run_id, started=extraction_started)
+        else:
+            cards, card_artifacts, card_errors = extract_cards(sources, layout_proposals, root, pool_root)
+            card_status = "available" if not card_errors else "failed"
+            card_stage = make_stage(
+                spec["stages"][5],
+                card_status,
+                reason="standalone card images are available" if card_status == "available" else "one or more card extractions failed",
+                run_id=run_id,
+                started=extraction_started,
+            )
+            card_input_fingerprint = object_hash({"layout": layout_stage["outputs"]["fingerprint"], "rules": "accepted-region-crop-v1"})
+            card_stage["cache"] = {"key": card_input_fingerprint, "parameters": {}, "reused": False, "source_stage_run": None}
+            card_stage["input"] = {"artifact_refs": [{"stage_id": "layout_fine_tuning", "fingerprint": layout_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][5]["input"], "fingerprint": card_input_fingerprint}
+            card_stage["evaluation"] = {"method": "deterministic accepted-region image extraction", "rules": ["only accepted proposals are extracted", "source and proposal lineage is retained", "pixel coordinates stay within source bounds", "image hashes are recorded"], "decisions": ["accepted card", "rejected crop"]}
+            card_stage["outputs"] = {"artifact_refs": card_artifacts, "records": cards, "fingerprint": object_hash(cards)}
+            card_stage["quality"] = {"confidence": 1.0 if cards and not card_errors else 0.0, "review_required": False, "errors": card_errors, "warnings": [], "card_count": len(cards)}
+            card_stage["handoff"] = {"accepted_refs": [card["card_id"] for card in cards], "pending_refs": [], "rejected_refs": [], "reason": "standalone card images are ready for orientation estimation"}
+    stages = [archive_stage, source_stage, collection_stage, classification_stage, layout_stage, card_stage]
+    for stage in spec["stages"][6:]:
         stages.append(make_stage(stage, "pending", reason=f"blocked until {stage['id']} is implemented", run_id=run_id))
     master = {
         "schema_version": spec["schema_version"],
@@ -442,8 +494,8 @@ def build_master(
         "pool_id": pool_id,
         "input": {"archive_path": relative(archive_path, root), "archive_sha256": archive_descriptor["archive_sha256"], "selection": selection},
         "processing": {"stage_order": [stage["id"] for stage in spec["stages"]], "stages": stages},
-        "artifacts": {"sources": sources, "collections": collections, "classifications": classification_decisions, "classification_features": classification_features, "classification_evaluations": classification_evaluations, "regions": classification_regions, "cards": [], "reviews": []},
-        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "classification_errors": len(classification_errors), "selected_member_count": len(selected)},
+        "artifacts": {"sources": sources, "collections": collections, "classifications": classification_decisions, "classification_features": classification_features, "classification_evaluations": classification_evaluations, "regions": layout_proposals or classification_regions, "cards": cards, "reviews": []},
+        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "classification_errors": len(classification_errors), "layout_errors": len(layout_errors), "card_errors": len(card_errors), "selected_member_count": len(selected)},
         "run": {"run_id": run_id, "started_at_utc": run_id.split("-", 1)[0], "until": until, "resume": resume},
     }
     errors = validate_master(master, spec)
@@ -464,7 +516,7 @@ def main() -> int:
     parser.add_argument("--pool", choices=sorted(ARCHIVES), required=True)
     parser.add_argument("--source")
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--until", choices=("archive", "sources", "collections", "classification"), default="sources")
+    parser.add_argument("--until", choices=("archive", "sources", "collections", "classification", "fine_tuning", "card_extraction"), default="sources")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
     parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL"))
