@@ -1,27 +1,29 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-22T18:24:25+00:00`
+Generated: `2026-09-22T18:39:55+00:00`
 
 ## Executive outcome
 
 - Contract validation: **PASS**
-- Processing masters found: **0** of 2 expected pools
+- Processing masters found: **1** of 2 expected pools
 - Pipeline stages defined: **9**
-- Pipeline stage records executed: **0**
-- Current boundary: the contract layer is validated; archive processing and downstream stages are not yet executed.
+- Pipeline stage records attempted: **2**
+- Current boundary: status below reflects the available pool master artifacts.
 
 ## KPI summary
 
 | KPI | Value |
 |---|---:|
-| Pools with master JSON | 0 |
-| Source artifacts | 0 |
+| Pools with master JSON | 1 |
+| Source artifacts | 3 |
 | Region proposals | 0 |
 | Card artifacts | 0 |
 | Review artifacts | 0 |
-| Available stages | 0 |
+| Unexecuted planned stages | 7 |
+| Stage records present | 9 |
+| Available stages | 2 |
 | Cached stages | 0 |
-| Pending stages | 0 |
+| Pending stages | 7 |
 | Model-review pending stages | 0 |
 | Model-uncertain stages | 0 |
 | Rejected stages | 0 |
@@ -31,19 +33,21 @@ Generated: `2026-09-22T18:24:25+00:00`
 
 | Phase | Stage ID | Status |
 |---|---|---|
-| ZIP archive | `zip_archive` | pending (not executed) |
-| Source files | `source_files` | pending (not executed) |
-| Collection images | `collection_images` | pending (not executed) |
-| Page classification and basic layout estimation | `page_classification` | pending (not executed) |
-| Layout fine tuning | `layout_fine_tuning` | pending (not executed) |
-| Card extraction | `card_extraction` | pending (not executed) |
-| Orientation estimation | `orientation_estimation` | pending (not executed) |
-| OCR extraction | `ocr_extraction` | pending (not executed) |
-| LLM review and refinement | `llm_review` | pending (not executed) |
+| ZIP archive | `zip_archive` | available: 1 |
+| Source files | `source_files` | available: 1 |
+| Collection images | `collection_images` | pending: 1 |
+| Page classification and basic layout estimation | `page_classification` | pending: 1 |
+| Layout fine tuning | `layout_fine_tuning` | pending: 1 |
+| Card extraction | `card_extraction` | pending: 1 |
+| Orientation estimation | `orientation_estimation` | pending: 1 |
+| OCR extraction | `ocr_extraction` | pending: 1 |
+| LLM review and refinement | `llm_review` | pending: 1 |
 
 ## Pool coverage
 
-No `pipeline/<pool>/processing_master.json` exists yet. This is expected before archive/source execution.
+| Pool | Master artifact | Sources | Regions | Cards | Reviews |
+|---|---|---:|---:|---:|---:|
+| `original` | `pipeline/original/processing_master.json` | 3 | 0 | 0 | 0 |
 
 ## Contract review
 
@@ -54,7 +58,7 @@ No `pipeline/<pool>/processing_master.json` exists yet. This is expected before 
 
 ## Next gate
 
-Run the archive/source phase for a bounded probe (`original`, first 3 members), then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
+Implement and run the `collection_images` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
 
 ## Source artifacts
 

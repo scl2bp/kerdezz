@@ -38,6 +38,24 @@ def count_items(master: dict[str, Any], key: str) -> int:
     return len(values) if isinstance(values, list) else 0
 
 
+def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
+    quality_values = [
+        record.get("quality", {})
+        for master in masters
+        for record in records(master)
+        if record.get("stage_id") == stage_id
+    ]
+    if stage_id == "zip_archive":
+        members = sum(value.get("member_count", 0) for value in quality_values)
+        selected = sum(value.get("selected_member_count", 0) for value in quality_values)
+        return f"{members} members, {selected} selected"
+    if stage_id == "source_files":
+        return f"{sum(value.get('source_count', 0) for value in quality_values)} sources"
+    if stage_id == "collection_images":
+        return f"{sum(value.get('cell_count', 0) for value in quality_values)} source cells"
+    return ""
+
+
 def status_counts(masters: list[dict[str, Any]]) -> Counter[str]:
     return Counter(record.get("status", "missing") for master in masters for record in records(master))
 
@@ -57,8 +75,23 @@ def stage_rows(spec: dict[str, Any], masters: list[dict[str, Any]]) -> list[str]
         else:
             counts = Counter(values)
             status = ", ".join(f"{name}: {counts[name]}" for name in sorted(counts))
-        rows.append(f"| {stage['name']} | `{stage_id}` | {status} |")
+        rows.append(f"| {stage['name']} | `{stage_id}` | {status} | {stage_scope(stage_id, masters)} |")
     return rows
+
+
+def next_gate(spec: dict[str, Any], masters: list[dict[str, Any]]) -> str:
+    if not masters:
+        return "Run the archive/source phase for a bounded probe (`original`, first 3 members), then regenerate this report."
+    for stage in spec["stages"]:
+        stage_records = [
+            record
+            for master in masters
+            for record in records(master)
+            if record.get("stage_id") == stage["id"]
+        ]
+        if not stage_records or any(record.get("status") == "pending" for record in stage_records):
+            return f"Implement and run the `{stage['id']}` phase for the selected pools, then regenerate this report."
+    return "All defined stages have non-pending records; review the final quality and failure KPIs."
 
 
 def render_report(
@@ -74,7 +107,9 @@ def render_report(
     card_count = sum(count_items(master, "cards") for master in masters)
     review_count = sum(count_items(master, "reviews") for master in masters)
     expected_stage_records = len(spec.get("stages", [])) * len(masters)
-    unexecuted_stage_records = max(0, expected_stage_records - sum(counts.values()))
+    absent_stage_records = max(0, expected_stage_records - sum(counts.values()))
+    unexecuted_stage_records = counts["pending"] + absent_stage_records
+    attempted_stage_records = sum(counts.values()) - counts["pending"]
     if not masters:
         unexecuted_stage_records = len(spec.get("stages", []))
     generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -88,7 +123,7 @@ def render_report(
         f"- Contract validation: **{contract_status}**",
         f"- Processing masters found: **{len(masters)}** of 2 expected pools",
         f"- Pipeline stages defined: **{len(spec.get('stages', []))}**",
-        f"- Pipeline stage records executed: **{sum(counts.values())}**",
+        f"- Pipeline stage records attempted: **{attempted_stage_records}**",
         (
             "- Current boundary: the contract layer is validated; archive processing and downstream stages are not yet executed."
             if not masters
@@ -105,6 +140,7 @@ def render_report(
         f"| Card artifacts | {card_count} |",
         f"| Review artifacts | {review_count} |",
         f"| Unexecuted planned stages | {unexecuted_stage_records} |",
+        f"| Stage records present | {sum(counts.values())} |",
         f"| Available stages | {counts['available']} |",
         f"| Cached stages | {counts['cached']} |",
         f"| Pending stages | {counts['pending']} |",
@@ -115,8 +151,8 @@ def render_report(
         "",
         "## Stage status",
         "",
-        "| Phase | Stage ID | Status |",
-        "|---|---|---|",
+        "| Phase | Stage ID | Status | Scope |",
+        "|---|---|---|---|",
         *stage_rows(spec, masters),
         "",
         "## Pool coverage",
@@ -159,7 +195,7 @@ def render_report(
             "",
             "## Next gate",
             "",
-            "Run the archive/source phase for a bounded probe (`original`, first 3 members), then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.",
+            next_gate(spec, masters) + " Do not interpret pending downstream stages as failures; they have not been executed yet.",
             "",
             "## Source artifacts",
             "",
