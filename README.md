@@ -31,16 +31,17 @@ Create labeled miniature collections and input metadata without rerunning OCR:
 ```bash
 python review_assets.py \
 	--archive KerdezzFelelek_ALAP.zip \
-	--source-dir source \
-	--output review/original \
-	--pool-id original \
-	--existing-json output/cards.json
+	--source-dir kerdezz/source \
+	--output kerdezz/output \
+	--pool-id kerdezz \
+	--existing-json kerdezz/cards.json
 
 python review_assets.py \
 	--archive GyerekKérdezzFelelek.zip \
-	--source-dir child_source \
-	--output review/children \
-	--pool-id children
+	--source-dir gyerek/source \
+	--output gyerek/output \
+	--pool-id gyerek \
+	--existing-json gyerek/cards.json
 ```
 
 The review output contains labeled source contact sheets, card contact sheets for the existing pool, and `input_source_metadata.json`. Existing card records are treated as cached; only explicitly flagged images or new source pools should be sent for further LLM evaluation.
