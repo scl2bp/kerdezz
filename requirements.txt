@@ -1,2 +1,4 @@
 Pillow>=10
 pytesseract>=0.3.13
+openai>=1.0
+azure-identity>=1.15
