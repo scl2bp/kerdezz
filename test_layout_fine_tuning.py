@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from layout_fine_tuning import refine_source_layout
+from layout_fine_tuning import estimate_constant_card_geometry, refine_source_layout
 
 
 def _source() -> dict[str, object]:
@@ -83,3 +83,30 @@ def test_composite_frame_refinement_tightens_coarse_boundary(tmp_path: Path) -> 
     assert proposal["pixel_coordinates"]["bottom"] == 48
     assert proposal["refinement_method"] == "local-frame-edge-run-v1"
     assert proposal["boundary_evidence"]["bottom"]["refined"] is True
+
+
+def test_constant_card_geometry_uses_content_columns_and_gutters() -> None:
+    image = Image.new("RGB", (400, 400), "white")
+    draw = ImageDraw.Draw(image)
+    for row in range(3):
+        for column in range(3):
+            left = 20 + column * 120
+            top = 20 + row * 120
+            draw.rectangle((left, top, left + 119, top + 119), outline="lightgray", width=2)
+            draw.rectangle((left + 35, top + 35, left + 84, top + 84), fill="black")
+
+    candidates = [
+        {"coordinates": {"left": column / 3, "top": row / 3, "right": (column + 1) / 3, "bottom": (row + 1) / 3}}
+        for row in range(3)
+        for column in range(3)
+    ]
+
+    geometry = estimate_constant_card_geometry(image, candidates)
+
+    assert geometry is not None
+    assert geometry["method"] == "constant-card-content-pitch-v1"
+    assert geometry["content_width"] == 50
+    assert geometry["column_distance"] == 70
+    assert geometry["card_width"] == 120
+    assert geometry["pixel_boundaries"]["x"] == [20, 140, 260, 380]
+    assert geometry["pixel_boundaries"]["y"] == [20, 140, 260, 380]
