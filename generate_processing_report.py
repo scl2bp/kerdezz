@@ -61,6 +61,10 @@ def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
         return f"{sum(value.get('proposal_count', 0) for value in quality_values)} proposals"
     if stage_id == "card_extraction":
         return f"{sum(value.get('card_count', 0) for value in quality_values)} cards"
+    if stage_id == "orientation_estimation":
+        return f"{sum(value.get('card_count', 0) for value in quality_values)} oriented cards"
+    if stage_id == "ocr_extraction":
+        return f"{sum(value.get('card_count', 0) for value in quality_values)} OCR records"
     return ""
 
 

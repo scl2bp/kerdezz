@@ -106,13 +106,17 @@ The pipeline must support these bounded runs:
 --until sources        # inventory plus safe materialization/decode
 --until collections    # adds labeled contact sheets and cell manifests
 --until classification  # adds layout decisions; no crops, OCR, or LLM
+--until fine_tuning     # adds validated crop proposals
+--until card_extraction # adds standalone card images
+--until orientation     # adds verified oriented card image artifacts
+--until ocr            # adds Hungarian OCR and parsed quiz text
 --pool original|children
 --source <member>      # restrict the probe to one ZIP member
 --limit <n>            # deterministic first-n source members after natural sorting
 --resume               # reuse valid stage outputs and continue pending descendants
 ```
 
-The default exploratory run should be `--pool original --limit 3 --until classification`, followed by a second run on `hely1.jpg`, `tábla1.jpg`, and one child image. This exercises regular, irregular, non-card, and individual layouts before any expensive stage is enabled. A partial run is successful even when later stages are `pending`; it must never label unexecuted OCR or review as `available`.
+The default exploratory run should be `--pool original --limit 3 --until classification`, followed by a second run on `hely1.jpg`, `tábla1.jpg`, and one child image. This exercises regular, irregular, non-card, and individual layouts before any expensive stage is enabled. The full authoritative text run is `--pool original --until ocr`; it writes one orientation and one OCR artifact per accepted card. A partial run is successful even when later stages are `pending`; it must never label unexecuted OCR or review as `available`.
 
 ## Stage contracts
 

@@ -1,6 +1,6 @@
-# Kerdezz card extraction
+# Kerdezz card extraction and processing pipeline
 
-This project extracts the 3x3 Hungarian card sheets from `KerdezzFelelek_ALAP.zip` into standalone JPEG images and OCR data. The supplied archive contains 31 sheets and 279 cards.
+This project classifies Hungarian quiz-card sheets, extracts standalone card images, estimates orientation, and stores authoritative OCR evidence. The supplied original archive contains 31 source images and currently produces 231 accepted cards after geometry validation.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ sudo apt-get install tesseract-ocr tesseract-ocr-hun
 python -m pip install -r requirements.txt
 ```
 
-## Run
+## Legacy extraction
 
 ```bash
 python extract_cards.py KerdezzFelelek_ALAP.zip --output output
@@ -23,6 +23,24 @@ The command creates:
 - `output/cards.json`, containing the source location, image path, OCR category, clues, answer, and raw OCR text for every card
 
 The raw OCR is kept because the source scans contain occasional hyphenated line breaks and characters that may need manual review.
+
+The legacy command is retained for comparison. Its `cards.json` is not the authoritative output of the current content-addressed pipeline.
+
+## Authoritative pipeline
+
+Run the current master pipeline through OCR with:
+
+```bash
+python master_pipeline.py --pool original --until ocr
+```
+
+The master JSON is written to `pipeline/original/processing_master.json`. It links each accepted card to:
+
+- `pipeline/original/cards/<card_id>/card.jpg`
+- `pipeline/original/orientation/<card_id>/oriented.jpg` and `orientation.json`
+- `pipeline/original/ocr/<card_id>/ocr.json`
+
+OCR records preserve raw text, ordered lines and words, parsed category/clues/answer fields, confidence, warnings, Tesseract configuration, and source/card/orientation hashes. Low-confidence records remain explicitly review-pending.
 
 ## Source review collections
 
@@ -53,13 +71,13 @@ python llm_usage.py \
 	--cache review/llm_cache.json
 ```
 
-## Processing master JSON (planned implementation)
+## Processing master JSON
 
 The target artifact is one hierarchical master JSON per input archive. The implementation plan and machine-readable stage contract are available here:
 
 See [pipeline_implementation_plan.md](pipeline_implementation_plan.md) for the stage contracts, failure prevention, recovery behavior, and acceptance criteria. See [pipeline_spec.json](pipeline_spec.json) for the machine-readable contract.
 
-The master builder is not implemented yet. The existing `pipeline.py` is a legacy SQLite-oriented ledger and must not be treated as the authoritative output. Once the master builder exists, it will create one JSON per pool with stage inputs, decisions, outputs, quality state, handoffs, source provenance, cards, and Hungarian quiz text. A stage will be marked `cached` only when its prior valid output has the same content-based cache key.
+The existing `pipeline.py` is a legacy SQLite-oriented ledger and must not be treated as the authoritative output. `master_pipeline.py` creates one JSON per pool with stage inputs, decisions, outputs, quality state, handoffs, source provenance, cards, orientation, and Hungarian quiz text. A stage will be marked `cached` only when its prior valid output has the same content-based cache key.
 
 ## Processing report
 

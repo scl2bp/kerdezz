@@ -1,13 +1,13 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-23T07:07:41+00:00`
+Generated: `2026-09-23T11:23:32+00:00`
 
 ## Executive outcome
 
 - Contract validation: **PASS**
 - Processing masters found: **1** of 2 expected pools
 - Pipeline stages defined: **9**
-- Pipeline stage records attempted: **6**
+- Pipeline stage records attempted: **8**
 - Current boundary: status below reflects the available pool master artifacts.
 
 ## KPI summary
@@ -19,11 +19,11 @@ Generated: `2026-09-23T07:07:41+00:00`
 | Region proposals | 231 |
 | Card artifacts | 231 |
 | Review artifacts | 0 |
-| Unexecuted planned stages | 3 |
+| Unexecuted planned stages | 1 |
 | Stage records present | 9 |
-| Available stages | 6 |
+| Available stages | 8 |
 | Cached stages | 0 |
-| Pending stages | 3 |
+| Pending stages | 1 |
 | Model-review pending stages | 0 |
 | Model-uncertain stages | 0 |
 | Rejected stages | 0 |
@@ -39,8 +39,8 @@ Generated: `2026-09-23T07:07:41+00:00`
 | Page classification and basic layout estimation | `page_classification` | available: 1 | 31 sources, 31 feature artifacts, 231 accepted regions |
 | Layout fine tuning | `layout_fine_tuning` | available: 1 | 231 proposals |
 | Card extraction | `card_extraction` | available: 1 | 231 cards |
-| Orientation estimation | `orientation_estimation` | pending: 1 |  |
-| OCR extraction | `ocr_extraction` | pending: 1 |  |
+| Orientation estimation | `orientation_estimation` | available: 1 | 231 oriented cards |
+| OCR extraction | `ocr_extraction` | available: 1 | 231 OCR records |
 | LLM review and refinement | `llm_review` | pending: 1 |  |
 
 ## Pool coverage
@@ -58,7 +58,7 @@ Generated: `2026-09-23T07:07:41+00:00`
 
 ## Next gate
 
-Implement and run the `orientation_estimation` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
+Implement and run the `llm_review` phase for the selected pools, then regenerate this report. Do not interpret pending downstream stages as failures; they have not been executed yet.
 
 ## Source artifacts
 
