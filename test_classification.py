@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from classification import analyze_source_features
+from classification import analyze_source_features, fuse_classification
 
 
 def _source(path: Path, source_id: str) -> dict[str, str]:
@@ -58,3 +58,30 @@ def test_composite_layout_preserves_dominant_grid_and_horizontal_pair(tmp_path: 
         "secondary_horizontal_pair",
     }
     assert {region["orientation"] for region in features["region_candidates"]} == {"vertical", "horizontal"}
+
+
+def test_saturated_collection_outlier_is_non_card_without_accepted_regions() -> None:
+    source = {"source_id": "board", "file_sha256": "board-hash"}
+    features = {
+        "region_candidates": [{"region_id": "candidate"}],
+        "layout_observation": {"family": "composite_regions"},
+        "image_statistics": {"color": {"saturation_mean": 0.54, "saturated_fraction": 0.76}},
+        "feature_summary": {"possible_non_card_signal": 0.2},
+    }
+    evaluation = {
+        "deterministic_context": {
+            "grid_source_count": 3,
+            "color_statistics": {
+                "saturation_mean": {"mean": 0.03, "stddev": 0.01},
+                "saturated_fraction": {"mean": 0.003, "stddev": 0.002},
+            },
+        },
+        "feature_records": [],
+        "model": {"response": None},
+    }
+
+    decision = fuse_classification(source, features, evaluation)
+
+    assert decision["routing_class"] == "non_card"
+    assert decision["accepted_region_count"] == 0
+    assert "color_distribution_outlier" in decision["observation_profile"]["anomalies"]

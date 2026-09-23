@@ -1,6 +1,6 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-22T20:24:33+00:00`
+Generated: `2026-09-23T07:07:41+00:00`
 
 ## Executive outcome
 
@@ -15,9 +15,9 @@ Generated: `2026-09-22T20:24:33+00:00`
 | KPI | Value |
 |---|---:|
 | Pools with master JSON | 1 |
-| Source artifacts | 1 |
-| Region proposals | 8 |
-| Card artifacts | 8 |
+| Source artifacts | 31 |
+| Region proposals | 231 |
+| Card artifacts | 231 |
 | Review artifacts | 0 |
 | Unexecuted planned stages | 3 |
 | Stage records present | 9 |
@@ -33,12 +33,12 @@ Generated: `2026-09-22T20:24:33+00:00`
 
 | Phase | Stage ID | Status | Scope |
 |---|---|---|---|
-| ZIP archive | `zip_archive` | available: 1 | 31 members, 1 selected |
-| Source files | `source_files` | available: 1 | 1 sources |
-| Collection images | `collection_images` | available: 1 | 1 source cells |
-| Page classification and basic layout estimation | `page_classification` | available: 1 | 1 sources, 1 feature artifacts, 8 accepted regions |
-| Layout fine tuning | `layout_fine_tuning` | available: 1 | 8 proposals |
-| Card extraction | `card_extraction` | available: 1 | 8 cards |
+| ZIP archive | `zip_archive` | available: 1 | 31 members, 31 selected |
+| Source files | `source_files` | available: 1 | 31 sources |
+| Collection images | `collection_images` | available: 1 | 31 source cells |
+| Page classification and basic layout estimation | `page_classification` | available: 1 | 31 sources, 31 feature artifacts, 231 accepted regions |
+| Layout fine tuning | `layout_fine_tuning` | available: 1 | 231 proposals |
+| Card extraction | `card_extraction` | available: 1 | 231 cards |
 | Orientation estimation | `orientation_estimation` | pending: 1 |  |
 | OCR extraction | `ocr_extraction` | pending: 1 |  |
 | LLM review and refinement | `llm_review` | pending: 1 |  |
@@ -47,7 +47,7 @@ Generated: `2026-09-22T20:24:33+00:00`
 
 | Pool | Master artifact | Sources | Regions | Cards | Reviews |
 |---|---|---:|---:|---:|---:|
-| `original` | `pipeline/original/processing_master.json` | 1 | 8 | 8 | 0 |
+| `original` | `pipeline/original/processing_master.json` | 31 | 231 | 231 | 0 |
 
 ## Contract review
 

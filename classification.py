@@ -20,8 +20,8 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageOps
 
 
-FEATURE_RULES_VERSION = "projection-features-v1"
-CLASSIFICATION_RULES_VERSION = "observation-fusion-v1"
+FEATURE_RULES_VERSION = "projection-features-v2"
+CLASSIFICATION_RULES_VERSION = "observation-fusion-v2"
 MODEL_PROMPT_VERSION = "collection-routing-evidence-v1"
 IMPLEMENTATION_VERSION = "classification-v1"
 ROUTING_CLASSES = ("card_collection", "individual_card", "non_card", "unknown")
@@ -215,6 +215,44 @@ def _border_signal(image: Image.Image) -> float:
     return round(min(1.0, max(0.0, (border_density - interior_density) * 5 + 0.5)), 6)
 
 
+def _color_statistics(path: Path) -> dict[str, float]:
+    with Image.open(path) as original:
+        image = original.convert("HSV")
+        scale = min(1.0, SAMPLE_LONG_SIDE / max(image.width, image.height))
+        if scale < 1:
+            image = image.resize((max(2, round(image.width * scale)), max(2, round(image.height * scale))), Image.Resampling.LANCZOS)
+        saturation = [pixel[1] / 255 for pixel in image.getdata()]
+    mean = sum(saturation) / max(1, len(saturation))
+    variance = sum((value - mean) ** 2 for value in saturation) / max(1, len(saturation))
+    return {
+        "saturation_mean": round(mean, 6),
+        "saturation_stddev": round(variance**0.5, 6),
+        "saturated_fraction": round(sum(value >= 0.35 for value in saturation) / max(1, len(saturation)), 6),
+    }
+
+
+def _distribution(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "stddev": 0.0, "median": 0.0, "mad": 0.0}
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    centre = median(values)
+    mad = median([abs(value - centre) for value in values])
+    return {"mean": round(mean, 6), "stddev": round(variance**0.5, 6), "median": round(centre, 6), "mad": round(mad, 6)}
+
+
+def _outlier_score(value: float, values: list[float]) -> tuple[float, dict[str, float]]:
+    statistics = _distribution(values)
+    scale = max(statistics["stddev"], 0.01)
+    z_score = (value - statistics["mean"]) / scale
+    return round(z_score, 6), statistics
+
+
+def _robust_outlier_score(value: float, statistics: dict[str, float]) -> float:
+    scale = max(1.4826 * statistics.get("mad", 0.0), 0.01)
+    return round((value - statistics.get("median", statistics.get("mean", 0.0))) / scale, 6)
+
+
 def _grid_regions(vertical: list[dict[str, float]], horizontal: list[dict[str, float]]) -> list[dict[str, Any]]:
     if len(vertical) < 2 or len(horizontal) < 2:
         return []
@@ -275,6 +313,42 @@ def _best_boundary(support: list[float], expected: float, start: float, end: flo
     return round(position, 6), round(min(1.0, support[index] / 40), 6)
 
 
+def _support_statistics(support: list[float], expected: float, start: float, end: float) -> dict[str, float]:
+    if not support:
+        return {"mean": 0.0, "stddev": 0.0, "maximum": 0.0, "z_score": 0.0}
+    coordinate_count = len(support)
+    window_start = max(0, round((expected - start) / (end - start) * coordinate_count) - max(2, round(coordinate_count * 0.08)))
+    window_end = min(coordinate_count, round((expected - start) / (end - start) * coordinate_count) + max(2, round(coordinate_count * 0.08)))
+    values = support[window_start:max(window_start + 1, window_end)]
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    stddev = variance**0.5
+    maximum = max(values)
+    return {
+        "mean": round(mean, 6),
+        "stddev": round(stddev, 6),
+        "maximum": round(maximum, 6),
+        "z_score": round((maximum - mean) / max(stddev, 1.0), 6),
+    }
+
+
+def _grid_regions_from_boundaries(x_boundaries: list[float], y_boundaries: list[float]) -> list[dict[str, Any]]:
+    regions: list[dict[str, Any]] = []
+    for row in range(len(y_boundaries) - 1):
+        for column in range(len(x_boundaries) - 1):
+            regions.append(
+                {
+                    "region_id": f"r{row + 1:02d}c{column + 1:02d}",
+                    "role": "quiz_card_candidate",
+                    "coordinates": {"left": round(x_boundaries[column], 6), "top": round(y_boundaries[row], 6), "right": round(x_boundaries[column + 1], 6), "bottom": round(y_boundaries[row + 1], 6)},
+                    "transform": {"rotation_degrees": 0},
+                    "producer": "deterministic_composite_frame_fallback",
+                    "confidence": 0.0,
+                }
+            )
+    return regions
+
+
 def _composite_regions(image: Image.Image) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Propose mixed aspect-ratio regions from local frame evidence."""
     height_ratio = image.height / max(1, image.width)
@@ -309,6 +383,7 @@ def _composite_regions(image: Image.Image) -> tuple[list[dict[str, Any]], dict[s
         return [], None
     lower_support = _line_support(image, "vertical", lower_start, 1.0)
     detected_lower_column, lower_confidence = _best_boundary(lower_support, 0.5, 0.0, 1.0)
+    lower_statistics = _support_statistics(lower_support, 0.5, 0.0, 1.0)
     lower_column = 0.5
     if abs(detected_lower_column - lower_column) <= 0.08:
         lower_column = round((detected_lower_column + lower_column) / 2, 6)
@@ -352,9 +427,19 @@ def _composite_regions(image: Image.Image) -> tuple[list[dict[str, Any]], dict[s
         "dominant_layout": {"family": "grid", "orientation": "vertical", "row_count": 2, "column_count": 3, "region_count": 6},
         "secondary_layout": {"family": "pair", "orientation": "horizontal", "row_count": 1, "column_count": 2, "region_count": 2},
         "confidence": round(min(first_confidence, second_confidence, lower_confidence, lower_band_confidence), 6),
-        "boundary_evidence": {"horizontal_peaks": horizontal_peaks[:8], "row_boundaries": row_boundaries, "column_boundaries": x_boundaries, "lower_column": lower_column},
+        "boundary_evidence": {
+            "horizontal_peaks": horizontal_peaks[:8],
+            "row_boundaries": row_boundaries,
+            "column_boundaries": x_boundaries,
+            "lower_column": lower_column,
+            "lower_column_statistics": lower_statistics,
+        },
         "coordinate_system": "normalized [0, 1] image coordinates",
     }
+    if lower_confidence < 0.5:
+        observation["family"] = "grid_fallback"
+        observation["fallback_boundaries"] = {"x": x_boundaries, "y": [0.0, row_boundaries[0], row_boundaries[1], 1.0]}
+        return [], observation
     return regions, observation
 
 
@@ -372,6 +457,10 @@ def analyze_source_features(source: dict[str, Any], root: Path) -> dict[str, Any
     if not horizontal:
         horizontal, horizontal_stats = _separator_peaks(horizontal_values)
     regions, composite_observation = _composite_regions(image)
+    if not regions and composite_observation and composite_observation.get("family") == "grid_fallback":
+        boundaries = composite_observation["fallback_boundaries"]
+        regions = _grid_regions_from_boundaries(boundaries["x"], boundaries["y"])
+        composite_observation = None
     if not regions:
         regions = _grid_regions(vertical, horizontal)
     grid_confidence = 0.0
@@ -418,6 +507,7 @@ def analyze_source_features(source: dict[str, Any], root: Path) -> dict[str, Any
             "aspect_ratio": aspect_ratio,
             "edge_density": edge_density,
             "border_signal": border_signal,
+            "color": _color_statistics(source_path),
         },
         "projection_evidence": {
             "vertical": {"peaks": vertical, "statistics": vertical_stats, "profile": [round(value, 4) for value in vertical_values], "ink_profile": [round(value, 4) for value in vertical_ink]},
@@ -490,6 +580,10 @@ def build_collection_analysis(
     deterministic_context = {
         "grid_source_count": sum(bool(feature_by_source.get(cell["source_id"], {}).get("region_candidates")) for cell in manifest["cells"]),
         "source_count": len(manifest["cells"]),
+        "color_statistics": {
+            "saturation_mean": _distribution([feature_by_source[cell["source_id"]].get("image_statistics", {}).get("color", {}).get("saturation_mean", 0.0) for cell in manifest["cells"] if cell["source_id"] in feature_by_source]),
+            "saturated_fraction": _distribution([feature_by_source[cell["source_id"]].get("image_statistics", {}).get("color", {}).get("saturated_fraction", 0.0) for cell in manifest["cells"] if cell["source_id"] in feature_by_source]),
+        },
     }
     normalized_model = normalize_model_result(model_result, manifest) if model_result is not None else None
     payload = {
@@ -549,11 +643,20 @@ def fuse_classification(
     source_id = source["source_id"]
     has_grid = bool(features["region_candidates"])
     context = collection_evaluation["deterministic_context"]
+    color = features.get("image_statistics", {}).get("color", {})
+    color_context = context.get("color_statistics", {})
+    saturation_statistics = color_context.get("saturation_mean", {})
+    saturated_fraction_statistics = color_context.get("saturated_fraction", {})
+    saturation_z = _robust_outlier_score(color.get("saturation_mean", 0.0), saturation_statistics)
+    saturated_fraction_z = _robust_outlier_score(color.get("saturated_fraction", 0.0), saturated_fraction_statistics)
+    color_outlier = saturation_z >= 5.0 and saturated_fraction_z >= 5.0
     peer_context = _collection_peer_context(source_id, [
         {"source": item["source"], "region_candidates": item.get("region_candidates", [])}
         for item in collection_evaluation.get("feature_records", [])
     ]) if collection_evaluation.get("feature_records") else {"peer_count": 0, "peer_grid_count": 0, "peer_grid_ratio": 0.0}
-    if has_grid:
+    if color_outlier:
+        deterministic_scores = {"card_collection": 0.01, "individual_card": 0.01, "non_card": 0.94, "unknown": 0.04}
+    elif has_grid:
         deterministic_scores = {"card_collection": 0.94, "individual_card": 0.01, "non_card": 0.01, "unknown": 0.04}
     elif context["grid_source_count"] == 0:
         deterministic_scores = {"card_collection": 0.02, "individual_card": 0.78, "non_card": 0.04, "unknown": 0.16}
@@ -572,7 +675,9 @@ def fuse_classification(
         selected = "unknown"
         confidence = final_scores["unknown"]
     roles: list[str]
-    if has_grid:
+    if color_outlier:
+        roles = ["game_board"]
+    elif has_grid:
         roles = ["quiz_card_front"]
     elif selected == "individual_card":
         roles = ["quiz_card_front"]
@@ -590,6 +695,8 @@ def fuse_classification(
         anomalies.extend(["irregular_regions", "mixed_orientation"] if features["feature_summary"]["possible_non_card_signal"] < 0.45 else ["possible_non_card"])
     if model_item:
         anomalies.extend(model_item["anomalies"])
+    if color_outlier:
+        anomalies.append("color_distribution_outlier")
     accepted_regions = features["region_candidates"] if selected == "card_collection" else []
     for region in accepted_regions:
         region["accepted"] = True
