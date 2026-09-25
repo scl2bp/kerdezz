@@ -88,3 +88,11 @@ python generate_processing_report.py
 ```
 
 The command writes [processing_report.md](processing_report.md). It reads the contract and any `pipeline/<pool>/processing_master.json` files, then reports contract validity, stage statuses, pool coverage, source/region/card/review counts, cache and failure counts, and the next automated gate. The report distinguishes validated planning from processing that has actually executed.
+
+After LLM review is implemented, the finalization sequence will validate both pool masters and then promote this report into the terminal pipeline artifacts:
+
+```bash
+python finalize_pipeline.py --root . --require-llm
+```
+
+Finalization is deliberately cross-pool. It writes a validation result artifact, records the report artifact and SHA-256 in each pool master, and regenerates the combined report from the validated masters. The report generator also validates every discovered master independently; it is not only a formatter.

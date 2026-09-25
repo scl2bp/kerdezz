@@ -1,29 +1,29 @@
 # Quiz Card Processing Report
 
-Generated: `2026-09-23T11:23:32+00:00`
+Generated: `2026-09-25T10:31:43+00:00`
 
 ## Executive outcome
 
 - Contract validation: **PASS**
-- Processing masters found: **1** of 2 expected pools
+- Processing masters found: **2** of 2 expected pools
 - Pipeline stages defined: **9**
-- Pipeline stage records attempted: **8**
+- Pipeline stage records attempted: **16**
 - Current boundary: status below reflects the available pool master artifacts.
 
 ## KPI summary
 
 | KPI | Value |
 |---|---:|
-| Pools with master JSON | 1 |
-| Source artifacts | 31 |
-| Region proposals | 231 |
-| Card artifacts | 231 |
+| Pools with master JSON | 2 |
+| Source artifacts | 81 |
+| Region proposals | 600 |
+| Card artifacts | 600 |
 | Review artifacts | 0 |
-| Unexecuted planned stages | 1 |
-| Stage records present | 9 |
-| Available stages | 8 |
+| Unexecuted planned stages | 2 |
+| Stage records present | 18 |
+| Available stages | 16 |
 | Cached stages | 0 |
-| Pending stages | 1 |
+| Pending stages | 2 |
 | Model-review pending stages | 0 |
 | Model-uncertain stages | 0 |
 | Rejected stages | 0 |
@@ -33,20 +33,21 @@ Generated: `2026-09-23T11:23:32+00:00`
 
 | Phase | Stage ID | Status | Scope |
 |---|---|---|---|
-| ZIP archive | `zip_archive` | available: 1 | 31 members, 31 selected |
-| Source files | `source_files` | available: 1 | 31 sources |
-| Collection images | `collection_images` | available: 1 | 31 source cells |
-| Page classification and basic layout estimation | `page_classification` | available: 1 | 31 sources, 31 feature artifacts, 231 accepted regions |
-| Layout fine tuning | `layout_fine_tuning` | available: 1 | 231 proposals |
-| Card extraction | `card_extraction` | available: 1 | 231 cards |
-| Orientation estimation | `orientation_estimation` | available: 1 | 231 oriented cards |
-| OCR extraction | `ocr_extraction` | available: 1 | 231 OCR records |
-| LLM review and refinement | `llm_review` | pending: 1 |  |
+| ZIP archive | `zip_archive` | available: 2 | 81 members, 81 selected |
+| Source files | `source_files` | available: 2 | 81 sources |
+| Collection images | `collection_images` | available: 2 | 81 source cells |
+| Page classification and basic layout estimation | `page_classification` | available: 2 | 81 sources, 81 feature artifacts, 600 accepted regions |
+| Layout fine tuning | `layout_fine_tuning` | available: 2 | 600 proposals |
+| Card extraction | `card_extraction` | available: 2 | 600 cards |
+| Orientation estimation | `orientation_estimation` | available: 2 | 600 oriented cards |
+| OCR extraction | `ocr_extraction` | available: 2 | 600 OCR records |
+| LLM review and refinement | `llm_review` | pending: 2 |  |
 
 ## Pool coverage
 
 | Pool | Master artifact | Sources | Regions | Cards | Reviews |
 |---|---|---:|---:|---:|---:|
+| `children` | `pipeline/children/processing_master.json` | 50 | 369 | 369 | 0 |
 | `original` | `pipeline/original/processing_master.json` | 31 | 231 | 231 | 0 |
 
 ## Contract review

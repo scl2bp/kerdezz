@@ -15,7 +15,7 @@ def test_report_distinguishes_validated_contract_from_unexecuted_pipeline() -> N
     assert "Contract validation: **PASS**" in report
     assert "Processing masters found: **0** of 2 expected pools" in report
     assert "Pipeline stage records attempted: **0**" in report
-    assert "| Unexecuted planned stages | 9 |" in report
+    assert "| Unexecuted planned stages | 11 |" in report
     assert "archive processing and downstream stages are not yet executed" in report
     assert "No `pipeline/<pool>/processing_master.json` exists yet." in report
     assert "| ZIP archive | `zip_archive` | pending (not executed) | 0 members, 0 selected |" in report
@@ -44,5 +44,5 @@ def test_report_aggregates_master_kpis() -> None:
     assert "Pipeline stage records attempted: **1**" in report
     assert "| Source artifacts | 1 |" in report
     assert "| Card artifacts | 1 |" in report
-    assert "| Unexecuted planned stages | 8 |" in report
+    assert "| Unexecuted planned stages | 10 |" in report
     assert "| ZIP archive | `zip_archive` | available: 1 | 0 members, 0 selected |" in report

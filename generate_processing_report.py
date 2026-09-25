@@ -228,8 +228,16 @@ def main() -> int:
 
     spec = load_json(args.spec)
     master_paths = list(args.master) if args.master else discover_masters(ROOT)
-    masters = [load_json(path) for path in master_paths]
+    masters: list[dict[str, Any]] = []
     contract_errors = validate_files(args.spec)
+    for path in master_paths:
+        try:
+            master = load_json(path)
+        except (OSError, json.JSONDecodeError) as error:
+            contract_errors.append(f"{path}: cannot load JSON: {error}")
+            continue
+        masters.append(master)
+        contract_errors.extend(f"{path}: {error}" for error in validate_files(args.spec, path))
     args.output.write_text(
         render_report(spec, masters, master_paths, contract_errors),
         encoding="utf-8",

@@ -93,7 +93,9 @@ After each phase, the worker writes a checkpoint JSON report containing counts, 
 | Fine tuning/extraction | Coordinates are in bounds; accepted regions do not overlap unexpectedly; card IDs remain linked to source hash and geometry |
 | Orientation | Every accepted card has a transform and confidence; unknown orientation blocks OCR |
 | OCR | Raw OCR exists; structured fields link to raw evidence; confidence and parse warnings are present |
-| LLM review | Only flagged/pending items were sent; cache hits and new requests are counted; response schema passed |
+| LLM review | Only flagged/pending items were sent; cache hits and new requests are counted; response schema passed; every correction is evidence-backed and non-inventive |
+| Contract validation | Both pool masters, stage records, statuses, and referenced artifacts validate against the versioned specification |
+| Processing report | The combined report is generated from validated masters and stored as a hashed terminal artifact |
 
 The checkpoint is an automated audit surface. Decisions are produced only by deterministic validation, versioned configuration/rules, or the configured vision model. Any correction is an immutable derived decision record containing its producer, rule/model version, input hashes, confidence, and validation result; source artifacts are never edited in place.
 
@@ -130,7 +132,9 @@ The default exploratory run should be `--pool original --limit 3 --until classif
 | Card extraction | Accepted region proposals | Is the crop a standalone card? Stable card identity and source linkage | Standalone card image plus crop provenance | No rejected/non-card region becomes a card |
 | Orientation estimation | Standalone card images | Upright, clockwise, counter-clockwise, upside-down, mixed, or unknown | Orientation transform, confidence, and oriented image reference | OCR only sees accepted upright candidates or records pending orientation |
 | OCR extraction | Oriented card images | Language, segmentation mode, text blocks, clue numbering, answer boundary, OCR confidence | Category, ordered clues, answer, raw OCR, line/word confidence, text quality flags | Structured text is complete enough for review or explicitly pending |
-| LLM review and refinement | Only flagged/pending artifacts and their evidence | Visual validity, orientation, layout, OCR corrections, confidence; never invent missing text | Cached model-review result, accepted corrections, model metadata | Final record has status `verified`, `model_uncertain`, `rejected`, or `failed` |
+| LLM review and refinement | Only flagged/pending artifacts and their evidence | Visual validity, crop integrity, orientation, OCR corrections including clipped final characters, spelling substitutions, and Hungarian diacritics (`ő/ö/ó`, `ű/ü/ú`, `é`, `á`, `í`), confidence, evidence sufficiency; never invent missing text | Immutable review event, accepted corrections, evidence refs including text bounding boxes, model metadata, final card status | Final record has status `verified`, `model_uncertain`, `rejected`, or `failed` |
+| Contract validation | All pool masters and the versioned specification | Schema, stage order, statuses, artifact references, final review statuses | Validation result JSON with master/spec hashes and errors | Every expected pool master is valid |
+| Processing report | Validated pool masters and validation results | Pool coverage, stage completion, counts, pending/failed items, quality KPIs | `processing_report.md` plus SHA-256 artifact record | Final report is reproducible and linked from each master |
 
 ## Required stage record
 
@@ -194,8 +198,10 @@ An unavailable prerequisite is recorded as `pending` with an issue, not as `avai
 6. **Card layer**: emit standalone images only for accepted proposals. Keep rejected candidates linked in the master JSON.
 7. **Orientation layer**: estimate orientation before OCR and record the transform used.
 8. **OCR layer**: keep raw OCR, structured text, confidence, line coordinates, and parse warnings together.
-9. **Model review layer**: send only `pending` or `model_review_pending` artifacts. Cache by image hash, prompt hash, model/deployment, and stage parameters.
-10. **Finalization**: mark each card `verified`, `model_uncertain`, `rejected`, or `failed`; never overwrite verified text without a new model decision event.
+9. **Model review layer**: deterministically build a queue from OCR warnings, low confidence, crop/orientation anomalies, and known exceptions. Send only `pending` or `model_review_pending` artifacts. Require a versioned response schema containing per-field decisions, evidence references, confidence, and an explicit no-invention outcome. Cache by image hash, prompt/schema hash, model/deployment, and stage parameters.
+10. **Post-OCR quality gate**: compare accepted corrections against the source image, oriented crop, OCR evidence, parser output, and crop provenance. Reject unsupported changes, preserve raw OCR, and mark unresolved cases `model_uncertain` rather than silently promoting them.
+11. **Contract validation**: validate every expected pool master and its final review statuses; write a validation result artifact with the specification and master hashes.
+12. **Processing report**: generate the cross-pool report only after validation passes, record its SHA-256 as an artifact in each master, and regenerate once after those terminal records are committed.
 
 ## Idempotency rule
 
@@ -257,3 +263,17 @@ The cache key must include the content hash of every input artifact, not its pat
 - `tábla1.jpg`: non-card board; all generated card-like crops are rejected.
 - Original card 202: card crop exists but OCR requires targeted review.
 - Child pool: 50 individual images require classification before extraction.
+
+## Post-OCR quality plan
+
+OCR is an extraction result, not a final truth claim. Before a card can be marked `verified`, the LLM review stage and deterministic finalization gate should cover these checks:
+
+1. **Crop integrity**: the card image matches the source hash, accepted region, geometry decision, and extraction transform; no border or neighboring-card contamination is silently accepted.
+2. **Orientation**: text is evaluated in the recorded upright orientation, with mixed or ambiguous orientation remaining review-pending.
+3. **Text evidence**: raw OCR, line/word coordinates, confidence, parser warnings, and answer-boundary evidence remain attached to every proposed correction.
+4. **Semantic structure**: category, ordered clues, and answer are checked for plausible field boundaries and card completeness. The model may repair recognition errors but must not invent absent text.
+5. **Visual agreement**: every accepted correction must be traceable to visible image evidence and identify the corrected field, old value, new value, confidence, and reason.
+6. **Hungarian character fidelity**: treat missing final letters and likely confusions such as `Ő/O/Ö/Ó`, `Ű/U/Ü/Ú`, `E/É`, `A/Á`, and `I/Í` as explicit correction hypotheses. Preserve the exact Unicode character supported by the pixels; never normalize diacritics away.
+7. **Spelling correction discipline**: a spelling change is accepted only when the source image visibly supports the replacement or an independent OCR/evidence pass agrees. Dictionary or language-model plausibility alone cannot change a name, answer, or clue.
+8. **Schema and cache safety**: malformed, incomplete, stale, or cross-pool responses become failed review events; unchanged verified images are not sent again.
+9. **Terminal status**: each card ends as `verified`, `model_uncertain`, `rejected`, or `failed`, with unresolved warnings retained. Only then can contract validation and the report stage run.
