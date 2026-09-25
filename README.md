@@ -40,7 +40,7 @@ The master JSON is written to `pipeline/original/processing_master.json`. It lin
 - `pipeline/original/orientation/<card_id>/oriented.jpg` and `orientation.json`
 - `pipeline/original/ocr/<card_id>/ocr.json`
 
-OCR records preserve raw text, ordered lines and words, parsed category/clues/answer fields, confidence, warnings, Tesseract configuration, and source/card/orientation hashes. Low-confidence records remain explicitly review-pending.
+OCR records preserve raw text, ordered lines and words, parsed category/clues/answer fields, confidence, warnings, Tesseract configuration, and source/card/orientation hashes. The optional LLM phase reviews every extracted quiz card, not only low-confidence records.
 
 ## Source review collections
 
@@ -89,7 +89,7 @@ python generate_processing_report.py
 
 The command writes [processing_report.md](processing_report.md). It reads the contract and any `pipeline/<pool>/processing_master.json` files, then reports contract validity, stage statuses, pool coverage, source/region/card/review counts, cache and failure counts, and the next automated gate. The report distinguishes validated planning from processing that has actually executed.
 
-After LLM review is implemented, the finalization sequence will validate both pool masters and then promote this report into the terminal pipeline artifacts:
+After the full-card LLM review, the finalization sequence validates both pool masters and then promotes this report into the terminal pipeline artifacts:
 
 ```bash
 python finalize_pipeline.py --root . --require-llm

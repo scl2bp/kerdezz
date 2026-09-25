@@ -572,14 +572,14 @@ def build_master(
             review_stage = make_stage(
                 spec["stages"][8],
                 review_status,
-                reason="all flagged OCR records have terminal review statuses" if review_status == "available" else "flagged OCR records remain queued for model review",
+                reason="all quiz OCR records have terminal review statuses" if review_status == "available" else "quiz OCR records remain queued for model review",
                 run_id=run_id,
                 started=review_started,
             )
-            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "deterministic-review-queue-v1", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
+            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "full-quiz-review-v2", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
             review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
             review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": ocr_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
-            review_stage["evaluation"] = {"method": "deterministic OCR quality queue with schema-validated Hungarian visual review", "rules": ["only flagged or pending OCR records enter the queue", "corrections require visible evidence", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+            review_stage["evaluation"] = {"method": "one schema-validated Hungarian visual review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "only corrections supported by visible pixels can change final OCR fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
             review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
             review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
             review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
@@ -617,9 +617,9 @@ def main() -> int:
     parser.add_argument("--until", choices=("archive", "sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"), default="sources")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
-    parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL"))
-    parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME"))
-    parser.add_argument("--llm-review", action="store_true", help="Enable Azure vision review for flagged OCR records.")
+    parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL", "https://ae-oa-d-we-004.openai.azure.com/"))
+    parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME", "gpt-5.6-luna"))
+    parser.add_argument("--llm-review", action="store_true", help="Enable Azure vision review for every extracted quiz card.")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")

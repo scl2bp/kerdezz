@@ -1,4 +1,4 @@
-"""Review flagged OCR records with evidence-backed Hungarian text correction."""
+"""Review every quiz OCR record with evidence-backed Hungarian text correction."""
 
 from __future__ import annotations
 
@@ -12,11 +12,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-IMPLEMENTATION_VERSION = "llm-review-v1"
-PROMPT_SCHEMA_VERSION = "hungarian-card-review-v1"
+IMPLEMENTATION_VERSION = "llm-review-v2"
+PROMPT_SCHEMA_VERSION = "hungarian-card-review-v2"
+REVIEW_SCOPE = "all_quiz_cards"
 REVIEW_THRESHOLD = 0.75
 TERMINAL_STATUSES = {"verified", "model_uncertain", "rejected", "failed"}
 CORRECTION_FIELDS = {"category", "answer", "clues"}
+DEFAULT_ENDPOINT = "https://ae-oa-d-we-004.openai.azure.com/"
+DEFAULT_DEPLOYMENT = "gpt-5.6-luna"
+NOISE_TOKENS = {"!", "]", "[", "j", "i", "he", "gi", "rtl", "meleg"}
 
 
 def utc_now() -> str:
@@ -61,22 +65,35 @@ def _needs_review(record: dict[str, Any]) -> tuple[bool, list[str]]:
     warnings = record.get("warnings", [])
     if isinstance(warnings, list):
         reasons.extend(f"ocr_warning:{warning}" for warning in warnings)
+    low_confidence_noise: list[str] = []
+    for line in record.get("lines", []):
+        if not isinstance(line, dict):
+            continue
+        for word in line.get("words", []):
+            if not isinstance(word, dict):
+                continue
+            text = str(word.get("text", "")).strip()
+            confidence = float(word.get("confidence", 100.0) or 0.0)
+            if text.lower() in NOISE_TOKENS and confidence < 70:
+                low_confidence_noise.append(text)
+    if low_confidence_noise:
+        reasons.append("low_confidence_noise:" + ",".join(sorted(set(low_confidence_noise))))
     return bool(reasons), reasons
 
 
 def build_review_queue(ocr_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     queue: list[dict[str, Any]] = []
     for record in ocr_records:
-        needs_review, reasons = _needs_review(record)
-        if needs_review:
-            queue.append(
-                {
-                    "card_id": record.get("card_id"),
-                    "ocr_artifact_ref": record.get("artifact_ref"),
-                    "oriented_image": record.get("oriented_image"),
-                    "reasons": reasons,
-                }
-            )
+        _, diagnostic_reasons = _needs_review(record)
+        queue.append(
+            {
+                "card_id": record.get("card_id"),
+                "ocr_artifact_ref": record.get("artifact_ref"),
+                "oriented_image": record.get("oriented_image"),
+                "review_scope": REVIEW_SCOPE,
+                "reasons": ["full_quiz_review", *diagnostic_reasons],
+            }
+        )
     return queue
 
 
@@ -90,13 +107,22 @@ def review_prompt(ocr: dict[str, Any]) -> str:
         "warnings": ocr.get("warnings", []),
     }
     return (
-        "Review this Hungarian quiz card image and the OCR evidence. Return JSON only. "
-        "Correct OCR only when the pixels support the correction. Check clipped final characters, "
-        "spelling substitutions, and Hungarian diacritics including ő/ö/ó, ű/ü/ú, é, á, and í. "
+        "Review this Hungarian quiz card image and its OCR evidence. Return JSON only. "
+        "This is a full review of one quiz card, not a selective spot check. First review the "
+        "printed category classification, then review the domain/content coherence of the clues "
+        "without rewriting factual content. Finally inspect OCR for clipped final characters, "
+        "spelling substitutions, punctuation noise, and Hungarian diacritics including ő/ö/ó, "
+        "ű/ü/ú, é, á, and í. Only correct OCR when the pixels support the correction. "
         "Do not use linguistic plausibility alone and do not invent text that is not visible. "
-        "Set no_invention to true only when every accepted value is visibly supported. "
-        "Schema: {decision: verified|corrected|model_uncertain|rejected|failed, confidence: number 0..1, "
-        "no_invention: boolean, reason: string, corrections: [{field: category|answer|clues, "
+        "Category and domain findings are audit metadata; only the corrections array may change "
+        "the downstream final OCR fields. Set no_invention to true only when every accepted "
+        "correction is visibly supported. Use parsed OCR values exactly in old_value. "
+        "Schema: {decision: verified|corrected|model_uncertain|rejected|failed, "
+        "confidence: number 0..1, no_invention: boolean, reason: string, "
+        "category_review: {observed_category: string, assessment: confirmed|ocr_error|uncertain, "
+        "recommended_category: string|null, evidence: [string], confidence: number}, "
+        "domain_review: {assessment: consistent|possible_issue|uncertain, findings: [string], "
+        "evidence: [string], confidence: number}, corrections: [{field: category|answer|clues, "
         "old_value: string, new_value: string, evidence: [string], confidence: number}]}.\n\n"
         + json.dumps(evidence, ensure_ascii=False, indent=2)
     )
@@ -164,6 +190,32 @@ def validate_response(response: Any) -> tuple[dict[str, Any] | None, list[str]]:
         errors.append("no_invention must be true")
     if not isinstance(response.get("reason"), str) or not response["reason"].strip():
         errors.append("reason must be a non-empty string")
+    category_review = response.get("category_review")
+    if not isinstance(category_review, dict):
+        errors.append("category_review must be an object")
+        category_review = {}
+    if not isinstance(category_review.get("observed_category"), str):
+        errors.append("category_review.observed_category must be a string")
+    if category_review.get("assessment") not in {"confirmed", "ocr_error", "uncertain"}:
+        errors.append("category_review.assessment is invalid")
+    recommended_category = category_review.get("recommended_category")
+    if recommended_category is not None and not isinstance(recommended_category, str):
+        errors.append("category_review.recommended_category must be a string or null")
+    if not isinstance(category_review.get("evidence"), list) or not category_review["evidence"] or not all(isinstance(item, str) and item.strip() for item in category_review["evidence"]):
+        errors.append("category_review.evidence must contain visible-evidence strings")
+    if not isinstance(category_review.get("confidence"), (int, float)) or not 0 <= float(category_review.get("confidence", -1)) <= 1:
+        errors.append("category_review.confidence must be a number from 0 to 1")
+    domain_review = response.get("domain_review")
+    if not isinstance(domain_review, dict):
+        errors.append("domain_review must be an object")
+        domain_review = {}
+    if domain_review.get("assessment") not in {"consistent", "possible_issue", "uncertain"}:
+        errors.append("domain_review.assessment is invalid")
+    for field in ("findings", "evidence"):
+        if not isinstance(domain_review.get(field), list) or not all(isinstance(item, str) and item.strip() for item in domain_review[field]):
+            errors.append(f"domain_review.{field} must contain strings")
+    if not isinstance(domain_review.get("confidence"), (int, float)) or not 0 <= float(domain_review.get("confidence", -1)) <= 1:
+        errors.append("domain_review.confidence must be a number from 0 to 1")
     corrections = response.get("corrections", [])
     if not isinstance(corrections, list):
         errors.append("corrections must be a list")
@@ -232,8 +284,9 @@ def review_records(
                 cache = value
         except (OSError, json.JSONDecodeError) as error:
             errors.append(f"review cache unreadable: {error}")
+    queued_card_ids = {str(item.get("card_id")) for item in queue}
     for card in cards:
-        card["final_status"] = "verified" if str(card.get("card_id")) not in {str(item.get("card_id")) for item in queue} else "model_review_pending"
+        card["final_status"] = "model_review_pending" if str(card.get("card_id")) in queued_card_ids else "rejected"
     for item in queue:
         card_id = str(item.get("card_id"))
         ocr = ocr_by_card.get(card_id)
@@ -281,13 +334,14 @@ def review_records(
         final_status = "verified" if decision in {"verified", "corrected"} else decision
         card["final_status"] = final_status
         card["review_status"] = final_status
-        review = {"artifact_type": "llm_review_event", "implementation_version": IMPLEMENTATION_VERSION, "review_id": review_id, "card_id": card_id, "status": final_status, "decision": decision, "source": source, "cache_key": cache_key, "request_ref": {"path": relative(review_dir / "request.json", root), "sha256": request_hash}, "response": normalized, "accepted_fields": normalized.get("corrections", []), "created_at_utc": utc_now()}
+        review = {"artifact_type": "llm_review_event", "implementation_version": IMPLEMENTATION_VERSION, "review_id": review_id, "card_id": card_id, "review_scope": REVIEW_SCOPE, "status": final_status, "decision": decision, "source": source, "cache_key": cache_key, "request_ref": {"path": relative(review_dir / "request.json", root), "sha256": request_hash}, "response": normalized, "category_review": normalized.get("category_review"), "domain_review": normalized.get("domain_review"), "accepted_fields": normalized.get("corrections", []), "created_at_utc": utc_now()}
         review["final_fields"] = final_fields or ocr.get("parsed", {})
         response_hash = atomic_json(review_dir / "response.json", review)
         review["artifact_ref"] = {"path": relative(review_dir / "response.json", root), "sha256": response_hash}
         reviews.append(review)
         artifacts.append(review["artifact_ref"])
         card["review_ref"] = review["artifact_ref"]
+        card["final_fields"] = review["final_fields"]
     if cache:
         atomic_json(cache_path, cache)
     pending = sum(card.get("final_status") == "model_review_pending" for card in cards)

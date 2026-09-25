@@ -219,10 +219,10 @@
     {
       "id": "llm_review",
       "name": "LLM review and refinement",
-      "input": ["ocr_extraction.pending_or_flagged", "oriented card image refs", "crop and OCR provenance"],
-      "requires": ["prompt/schema hash", "model/deployment", "image hash", "response cache key", "deterministic review queue"],
-      "decisions": ["accept OCR correction", "accept crop or orientation correction", "reject automated correction", "model_uncertain", "model_review_failed"],
-      "outputs": ["immutable review event", "accepted field corrections", "evidence references", "final card status"],
+      "input": ["all quiz OCR records", "oriented card image refs", "crop and OCR provenance"],
+      "requires": ["prompt/schema hash", "model/deployment", "image hash", "response cache key", "one request per quiz card", "category review", "domain content review"],
+      "decisions": ["accept evidence-backed OCR correction", "record category classification finding", "record domain content finding", "reject automated correction", "model_uncertain", "model_review_failed"],
+      "outputs": ["immutable review event per quiz card", "accepted OCR field corrections", "category and domain audit findings", "evidence references", "final card status"],
       "failure_modes": ["authentication failure", "malformed response", "schema validation failure", "invented or unsupported correction", "timeout", "missing evidence"],
       "handoff": "final_artifacts",
       "cache_key": ["image_hash", "prompt_hash", "deployment", "review_parameters", "implementation_version"]
