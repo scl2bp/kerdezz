@@ -20,6 +20,7 @@ from classification import classify_sources
 from card_extraction import extract_cards
 from contract_validator import validate_master
 from layout_fine_tuning import fine_tune_layouts
+from llm_review import review_records
 from orientation_estimation import estimate_orientations
 from ocr_extraction import extract_ocr
 
@@ -316,6 +317,7 @@ def build_master(
     enable_llm: bool = False,
     llm_endpoint: str | None = None,
     llm_deployment: str | None = None,
+    enable_llm_review: bool = False,
 ) -> tuple[dict[str, Any], Path]:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     run_root = root / "pipeline" / pool_id / "runs" / run_id
@@ -333,7 +335,7 @@ def build_master(
     source_stage = make_stage(spec["stages"][1], "pending", reason="source phase not selected", run_id=run_id)
     sources: list[dict[str, Any]] = []
     source_errors: list[str] = []
-    if until in ("sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr"):
+    if until in ("sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"):
         source_started = utc_now()
         sources, source_errors = materialize_sources(archive_path, pool_root, selected, root)
         source_status = "available" if not source_errors else "failed"
@@ -346,7 +348,7 @@ def build_master(
     collection_stage = make_stage(spec["stages"][2], "pending", reason="collection phase not selected", run_id=run_id)
     collections: list[dict[str, Any]] = []
     collection_errors: list[str] = []
-    if until in ("collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr"):
+    if until in ("collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"):
         collection_started = utc_now()
         collections, collection_errors = create_source_collections(sources, pool_root, root)
         collection_status = "available" if collections and not collection_errors else "failed"
@@ -363,7 +365,7 @@ def build_master(
     classification_artifacts: list[dict[str, Any]] = []
     classification_regions: list[dict[str, Any]] = []
     classification_errors: list[str] = []
-    if until in ("classification", "fine_tuning", "card_extraction", "orientation", "ocr"):
+    if until in ("classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"):
         classification_started = utc_now()
         if collection_stage["status"] != "available":
             classification_stage = make_stage(spec["stages"][3], "pending", reason="classification blocked by collection phase", run_id=run_id, started=classification_started)
@@ -441,7 +443,7 @@ def build_master(
     layout_proposals: list[dict[str, Any]] = []
     layout_artifacts: list[dict[str, Any]] = []
     layout_errors: list[str] = []
-    if until in ("fine_tuning", "card_extraction", "orientation", "ocr"):
+    if until in ("fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"):
         layout_started = utc_now()
         if classification_stage["status"] != "available":
             layout_stage = make_stage(spec["stages"][4], "pending", reason="layout fine-tuning blocked by classification phase", run_id=run_id, started=layout_started)
@@ -466,7 +468,7 @@ def build_master(
     cards: list[dict[str, Any]] = []
     card_artifacts: list[dict[str, str]] = []
     card_errors: list[str] = []
-    if until in ("card_extraction", "orientation", "ocr"):
+    if until in ("card_extraction", "orientation", "ocr", "llm_review"):
         extraction_started = utc_now()
         if layout_stage["status"] != "available":
             card_stage = make_stage(spec["stages"][5], "pending", reason="card extraction blocked by layout fine tuning", run_id=run_id, started=extraction_started)
@@ -491,7 +493,7 @@ def build_master(
     orientations: list[dict[str, Any]] = []
     orientation_artifacts: list[dict[str, str]] = []
     orientation_errors: list[str] = []
-    if until in ("orientation", "ocr"):
+    if until in ("orientation", "ocr", "llm_review"):
         orientation_started = utc_now()
         if card_stage["status"] != "available":
             orientation_stage = make_stage(spec["stages"][6], "pending", reason="orientation estimation blocked by card extraction", run_id=run_id, started=orientation_started)
@@ -521,7 +523,7 @@ def build_master(
     ocr_records: list[dict[str, Any]] = []
     ocr_artifacts: list[dict[str, str]] = []
     ocr_errors: list[str] = []
-    if until == "ocr":
+    if until in ("ocr", "llm_review"):
         ocr_started = utc_now()
         if orientation_stage["status"] != "available":
             ocr_stage = make_stage(spec["stages"][7], "pending", reason="OCR extraction blocked by orientation estimation", run_id=run_id, started=ocr_started)
@@ -541,14 +543,48 @@ def build_master(
             ocr_stage["evaluation"] = {"method": "Tesseract Hungarian OCR with deterministic line grouping and quiz parser", "rules": ["only verified oriented images are processed", "raw OCR is retained", "line and word evidence is retained", "parser warnings are explicit", "low-confidence text remains review-pending"], "decisions": ["category", "ordered clues", "answer candidate", "parse status", "text quality warnings"]}
             ocr_stage["outputs"] = {"artifact_refs": ocr_artifacts, "records": ocr_records, "fingerprint": object_hash(ocr_records)}
             ocr_stage["quality"] = {"confidence": round(sum(item["confidence"] for item in ocr_records) / len(ocr_records), 6) if ocr_records else 0.0, "review_required": any(item["status"] != "available" for item in ocr_records) or bool(ocr_errors), "errors": ocr_errors, "warnings": [f"{sum(item['status'] != 'available' for item in ocr_records)} OCR record(s) require review"], "card_count": len(ocr_records)}
-            ocr_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in ocr_records if item["status"] == "available"], "pending_refs": [item["card_id"] for item in ocr_records if item["status"] != "available"], "rejected_refs": [], "reason": "OCR artifacts are ready for optional LLM review"}
+            ocr_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in ocr_records if item["status"] == "available"], "pending_refs": [item["card_id"] for item in ocr_records if item["status"] != "available"], "rejected_refs": [], "reason": "OCR artifacts are ready for LLM review"}
             ocr_by_card = {item["card_id"]: item for item in ocr_records}
             for card in cards:
                 ocr = ocr_by_card.get(card["card_id"])
                 if ocr:
                     card["ocr_ref"] = ocr["artifact_ref"]
-    stages = [archive_stage, source_stage, collection_stage, classification_stage, layout_stage, card_stage, orientation_stage, ocr_stage]
-    for stage in spec["stages"][8:]:
+    review_stage = make_stage(spec["stages"][8], "pending", reason="LLM review phase not selected", run_id=run_id)
+    reviews: list[dict[str, Any]] = []
+    review_artifacts: list[dict[str, str]] = []
+    review_errors: list[str] = []
+    review_summary: dict[str, Any] = {"queue_count": 0, "reviewed_count": 0, "pending_count": 0}
+    if until == "llm_review":
+        review_started = utc_now()
+        if ocr_stage["status"] != "available":
+            review_stage = make_stage(spec["stages"][8], "pending", reason="LLM review blocked by OCR extraction", run_id=run_id, started=review_started)
+        else:
+            reviews, review_artifacts, review_errors, review_summary = review_records(
+                ocr_records,
+                cards,
+                root,
+                pool_root,
+                enable_model=enable_llm_review,
+                endpoint=llm_endpoint,
+                deployment=llm_deployment,
+            )
+            review_status = "available" if review_summary["pending_count"] == 0 else "model_review_pending"
+            review_stage = make_stage(
+                spec["stages"][8],
+                review_status,
+                reason="all flagged OCR records have terminal review statuses" if review_status == "available" else "flagged OCR records remain queued for model review",
+                run_id=run_id,
+                started=review_started,
+            )
+            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "deterministic-review-queue-v1", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
+            review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
+            review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": ocr_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
+            review_stage["evaluation"] = {"method": "deterministic OCR quality queue with schema-validated Hungarian visual review", "rules": ["only flagged or pending OCR records enter the queue", "corrections require visible evidence", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+            review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
+            review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
+            review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
+    stages = [archive_stage, source_stage, collection_stage, classification_stage, layout_stage, card_stage, orientation_stage, ocr_stage, review_stage]
+    for stage in spec["stages"][9:]:
         stages.append(make_stage(stage, "pending", reason=f"blocked until {stage['id']} is implemented", run_id=run_id))
     master = {
         "schema_version": spec["schema_version"],
@@ -556,8 +592,8 @@ def build_master(
         "pool_id": pool_id,
         "input": {"archive_path": relative(archive_path, root), "archive_sha256": archive_descriptor["archive_sha256"], "selection": selection},
         "processing": {"stage_order": [stage["id"] for stage in spec["stages"]], "stages": stages},
-        "artifacts": {"sources": sources, "collections": collections, "classifications": classification_decisions, "classification_features": classification_features, "classification_evaluations": classification_evaluations, "regions": layout_proposals or classification_regions, "cards": cards, "orientations": orientations, "ocr": ocr_records, "reviews": []},
-        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "classification_errors": len(classification_errors), "layout_errors": len(layout_errors), "card_errors": len(card_errors), "orientation_errors": len(orientation_errors), "ocr_errors": len(ocr_errors), "selected_member_count": len(selected)},
+        "artifacts": {"sources": sources, "collections": collections, "classifications": classification_decisions, "classification_features": classification_features, "classification_evaluations": classification_evaluations, "regions": layout_proposals or classification_regions, "cards": cards, "orientations": orientations, "ocr": ocr_records, "reviews": reviews},
+        "quality_summary": {"archive_errors": len(archive_errors), "source_errors": len(source_errors), "collection_errors": len(collection_errors), "classification_errors": len(classification_errors), "layout_errors": len(layout_errors), "card_errors": len(card_errors), "orientation_errors": len(orientation_errors), "ocr_errors": len(ocr_errors), "review_errors": len(review_errors), "selected_member_count": len(selected)},
         "run": {"run_id": run_id, "started_at_utc": run_id.split("-", 1)[0], "until": until, "resume": resume},
     }
     errors = validate_master(master, spec)
@@ -578,11 +614,12 @@ def main() -> int:
     parser.add_argument("--pool", choices=sorted(ARCHIVES), required=True)
     parser.add_argument("--source")
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--until", choices=("archive", "sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr"), default="sources")
+    parser.add_argument("--until", choices=("archive", "sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"), default="sources")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
     parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL"))
     parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME"))
+    parser.add_argument("--llm-review", action="store_true", help="Enable Azure vision review for flagged OCR records.")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
@@ -600,6 +637,7 @@ def main() -> int:
         enable_llm=args.llm,
         llm_endpoint=args.llm_endpoint,
         llm_deployment=args.llm_deployment,
+        enable_llm_review=args.llm_review,
     )
     print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": args.until, "sources": len(master["artifacts"]["sources"])}, ensure_ascii=False))
     return 0

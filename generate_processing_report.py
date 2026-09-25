@@ -38,6 +38,13 @@ def count_items(master: dict[str, Any], key: str) -> int:
     return len(values) if isinstance(values, list) else 0
 
 
+def display_path(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
     quality_values = [
         record.get("quality", {})
@@ -65,6 +72,12 @@ def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
         return f"{sum(value.get('card_count', 0) for value in quality_values)} oriented cards"
     if stage_id == "ocr_extraction":
         return f"{sum(value.get('card_count', 0) for value in quality_values)} OCR records"
+    if stage_id == "llm_review":
+        return f"{sum(value.get('reviewed_count', 0) for value in quality_values)} reviews, {sum(value.get('pending_count', 0) for value in quality_values)} pending"
+    if stage_id == "contract_validation":
+        return f"{len(quality_values)} master validations"
+    if stage_id == "processing_report":
+        return "combined report artifact"
     return ""
 
 
@@ -179,7 +192,7 @@ def render_report(
         )
         for path, master in zip(master_paths, masters):
             lines.append(
-                f"| `{master.get('pool_id', path.parent.name)}` | `{path.relative_to(ROOT)}` | "
+                f"| `{master.get('pool_id', path.parent.name)}` | `{display_path(path)}` | "
                 f"{count_items(master, 'sources')} | {count_items(master, 'regions')} | "
                 f"{count_items(master, 'cards')} | {count_items(master, 'reviews')} |"
             )

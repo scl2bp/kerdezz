@@ -112,6 +112,7 @@ The pipeline must support these bounded runs:
 --until card_extraction # adds standalone card images
 --until orientation     # adds verified oriented card image artifacts
 --until ocr            # adds Hungarian OCR and parsed quiz text
+--until llm_review     # adds schema-validated review events and terminal card statuses
 --pool original|children
 --source <member>      # restrict the probe to one ZIP member
 --limit <n>            # deterministic first-n source members after natural sorting
@@ -231,20 +232,16 @@ The cache key must include the content hash of every input artifact, not its pat
 - Classify original known exceptions deterministically and classify child files as individual-card candidates.
 - Generate card crops only after classification and layout decisions.
 - Run Hungarian OCR with raw evidence and structured parsing.
+- Run the LLM review phase for flagged OCR records and preserve immutable correction evidence.
+- Validate both pool masters and publish the combined processing report as a hashed terminal artifact.
 - Reuse existing LLM cache entries and isolate new reviews by content hash.
 
 ## What is still missing
 
-- `master_pipeline.py` that creates and updates one master JSON per archive.
-- A materialization stage that safely extracts archive members and records path traversal protection and decode errors.
-- A contact-sheet manifest containing cell coordinates, source IDs, and image hashes.
-- A layout classifier and region schema that handles sheets, individual cards, mixed orientation, and non-card images.
-- Orientation estimation as a real stage rather than a targeted-candidate note.
-- OCR provenance that includes engine/configuration versions and line/word confidence.
-- Strict validation of stage records, artifact references, status transitions, and cross-pool boundaries.
-- Atomic writes, run IDs, append-only review events, and recovery from interrupted runs.
-- Focused tests for idempotency, board exclusion, irregular layout handling, child-image handling, malformed LLM responses, and missing descendants.
-- Documentation that does not claim `pipeline.py` is the complete implementation until the master builder exists.
+- Deterministic cache reuse across repeated full runs; the current runner records cache keys but still rebuilds stages rather than reusing prior descendants.
+- Stronger status-transition and per-artifact SHA-256 validation beyond the terminal finalizer's reference checks.
+- Production LLM execution against the configured Azure deployment, including live response and retry monitoring.
+- Full idempotency and missing-descendant recovery tests for every stage.
 
 ## Acceptance criteria before calling the pipeline complete
 
