@@ -61,9 +61,9 @@ python review_assets.py \
 	--pool-id children
 ```
 
-The review output contains labeled source contact sheets, card contact sheets for the existing pool, and `input_source_metadata.json`. Existing card records are treated as cached; only explicitly flagged images or new source pools should be sent for further LLM evaluation.
+The review output contains labeled source contact sheets, card contact sheets for the existing pool, and `input_source_metadata.json`. Existing OCR records can be reviewed without regenerating card images or rerunning Tesseract.
 
-For optional Azure OpenAI review, pass only a flagged candidate or contact sheet. Results are cached by image SHA-256, prompt, and deployment:
+For optional Azure OpenAI review, send each extracted quiz text to Luna. The review request does not include the card image; results are cached by quiz-text hash, prompt, and deployment:
 
 ```bash
 python llm_usage.py \

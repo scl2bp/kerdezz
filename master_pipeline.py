@@ -576,10 +576,10 @@ def build_master(
                 run_id=run_id,
                 started=review_started,
             )
-            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "full-quiz-review-v2", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
+            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "trusted-quiz-text-review-v4", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
             review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
             review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": ocr_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
-            review_stage["evaluation"] = {"method": "one schema-validated Hungarian visual review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "only corrections supported by visible pixels can change final OCR fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+            review_stage["evaluation"] = {"method": "one schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "trusted language-model corrections replace matching OCR field values in final_fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
             review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
             review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
             review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
@@ -609,6 +609,70 @@ def load_spec() -> dict[str, Any]:
     return json.loads((ROOT / "pipeline_spec.json").read_text(encoding="utf-8"))
 
 
+def review_existing_master(
+    spec: dict[str, Any],
+    pool_id: str,
+    root: Path = ROOT,
+    *,
+    enable_llm_review: bool,
+    llm_endpoint: str | None,
+    llm_deployment: str | None,
+) -> tuple[dict[str, Any], Path]:
+    pool_root = root / "pipeline" / pool_id
+    master_path = pool_root / "processing_master.json"
+    if not master_path.is_file():
+        raise ValueError(f"existing processing master does not exist: {master_path}")
+    master = json.loads(master_path.read_text(encoding="utf-8"))
+    artifacts = master.get("artifacts", {})
+    cards = artifacts.get("cards", [])
+    ocr_records = artifacts.get("ocr", [])
+    if not isinstance(cards, list) or not isinstance(ocr_records, list) or not cards or not ocr_records:
+        raise ValueError("existing processing master has no reusable cards and OCR records")
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    reviews, review_artifacts, review_errors, review_summary = review_records(
+        ocr_records,
+        cards,
+        root,
+        pool_root,
+        enable_model=enable_llm_review,
+        endpoint=llm_endpoint,
+        deployment=llm_deployment,
+    )
+    review_input_fingerprint = object_hash({"ocr": object_hash(ocr_records), "rules": "trusted-quiz-text-review-v4", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
+    review_status = "available" if review_summary["pending_count"] == 0 else "model_review_pending"
+    review_stage = make_stage(
+        spec["stages"][8],
+        review_status,
+        reason="all quiz OCR records have terminal review statuses" if review_status == "available" else "quiz OCR records remain queued for model review",
+        run_id=run_id,
+        started=utc_now(),
+    )
+    review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
+    review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": object_hash(ocr_records)}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
+    review_stage["evaluation"] = {"method": "one schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "trusted language-model corrections replace matching OCR field values in final_fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+    review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
+    review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
+    review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
+
+    stages = master.get("processing", {}).get("stages", [])
+    for index, stage in enumerate(stages):
+        if stage.get("stage_id") == "llm_review":
+            stages[index] = review_stage
+            break
+    else:
+        raise ValueError("existing processing master has no llm_review stage")
+    artifacts["reviews"] = reviews
+    master["quality_summary"]["review_errors"] = len(review_errors)
+    master["processing"]["stages"] = stages
+    master["run"] = {**master.get("run", {}), "run_id": run_id, "until": "llm_review", "review_only": True}
+    errors = validate_master(master, spec)
+    if errors:
+        raise ValueError("reviewed master failed contract validation: " + "; ".join(errors))
+    atomic_json(pool_root / "processing_master.json", master)
+    return master, master_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool", choices=sorted(ARCHIVES), required=True)
@@ -616,6 +680,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--until", choices=("archive", "sources", "collections", "classification", "fine_tuning", "card_extraction", "orientation", "ocr", "llm_review"), default="sources")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--review-existing", action="store_true", help="Review the existing processing master without rerunning OCR.")
     parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
     parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL", "https://ae-oa-d-we-004.openai.azure.com/"))
     parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME", "gpt-5.6-luna"))
@@ -623,6 +688,19 @@ def main() -> int:
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
+    if args.review_existing:
+        try:
+            master, master_path = review_existing_master(
+                load_spec(),
+                args.pool,
+                enable_llm_review=args.llm_review,
+                llm_endpoint=args.llm_endpoint,
+                llm_deployment=args.llm_deployment,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            parser.error(str(error))
+        print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": "llm_review", "review_only": True, "cards": len(master["artifacts"]["cards"])}, ensure_ascii=False))
+        return 0
     archive_path = ARCHIVES[args.pool]
     if not archive_path.is_file():
         parser.error(f"archive does not exist: {archive_path}")

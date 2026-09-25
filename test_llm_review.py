@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from llm_review import build_review_queue, review_records, validate_response
+from llm_review import build_review_queue, review_prompt, review_records, validate_response
 
 
 def _ocr(tmp_path: Path) -> dict:
@@ -45,6 +45,17 @@ def test_queue_reviews_clean_record_for_consistent_coverage() -> None:
     assert queue[0]["reasons"] == ["full_quiz_review"]
 
 
+def test_review_prompt_contains_only_extracted_quiz_text() -> None:
+    prompt = review_prompt(_ocr(Path("/tmp")))
+
+    assert '"category": "FOGALOM"' in prompt
+    assert '"clues":' in prompt
+    assert '"answer": "TÖRŐ"' in prompt
+    assert '"raw_text"' not in prompt
+    assert '"lines"' not in prompt
+    assert '"confidence": 0.4' not in prompt
+
+
 def test_queue_includes_high_level_ocr_with_low_confidence_noise(tmp_path: Path) -> None:
     record = _ocr(tmp_path)
     record["status"] = "available"
@@ -63,23 +74,23 @@ def test_review_accepts_visible_diacritic_correction_without_mutating_ocr(tmp_pa
     ocr = _ocr(tmp_path)
     card = {"card_id": "card-1", "image_ref": ocr["oriented_image"]}
 
-    def fake_review(image_path: Path, prompt: str, endpoint: str, deployment: str) -> dict:
+    def fake_review(prompt: str, endpoint: str, deployment: str) -> dict:
         return {
             "decision": "corrected",
             "confidence": 0.98,
             "no_invention": True,
-            "reason": "The acute accent is visible in the answer glyph.",
+            "reason": "The Hungarian language context supports the corrected answer.",
             "category_review": {
                 "observed_category": "FOGALOM",
                 "assessment": "confirmed",
                 "recommended_category": None,
-                "evidence": ["category heading is visibly FOGALOM"],
+                "evidence": ["category value is FOGALOM in the extracted quiz text"],
                 "confidence": 0.98,
             },
             "domain_review": {
                 "assessment": "consistent",
                 "findings": [],
-                "evidence": ["clue and answer content are readable on the card"],
+                "evidence": ["clue and answer content are coherent in the extracted quiz text"],
                 "confidence": 0.9,
             },
             "corrections": [
@@ -87,7 +98,7 @@ def test_review_accepts_visible_diacritic_correction_without_mutating_ocr(tmp_pa
                     "field": "answer",
                     "old_value": "TÖRŐ",
                     "new_value": "TÖRŐ",
-                    "evidence": ["answer word bounding box shows ő"],
+                    "evidence": ["Hungarian word context supports the ő spelling"],
                     "confidence": 0.98,
                 }
             ],

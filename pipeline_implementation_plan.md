@@ -93,7 +93,7 @@ After each phase, the worker writes a checkpoint JSON report containing counts, 
 | Fine tuning/extraction | Coordinates are in bounds; accepted regions do not overlap unexpectedly; card IDs remain linked to source hash and geometry |
 | Orientation | Every accepted card has a transform and confidence; unknown orientation blocks OCR |
 | OCR | Raw OCR exists; structured fields link to raw evidence; confidence and parse warnings are present |
-| LLM review | Every quiz card is sent exactly once per review version; cache hits and new requests are counted; category and domain audits are present; every OCR correction is evidence-backed and non-inventive |
+| LLM review | Every quiz card is sent exactly once per review version; cache hits and new requests are counted; category and domain audits are present; trusted text corrections match existing OCR fields and do not invent new quiz content |
 | Contract validation | Both pool masters, stage records, statuses, and referenced artifacts validate against the versioned specification |
 | Processing report | The combined report is generated from validated masters and stored as a hashed terminal artifact |
 
@@ -133,7 +133,7 @@ The default exploratory run should be `--pool original --limit 3 --until classif
 | Card extraction | Accepted region proposals | Is the crop a standalone card? Stable card identity and source linkage | Standalone card image plus crop provenance | No rejected/non-card region becomes a card |
 | Orientation estimation | Standalone card images | Upright, clockwise, counter-clockwise, upside-down, mixed, or unknown | Orientation transform, confidence, and oriented image reference | OCR only sees accepted upright candidates or records pending orientation |
 | OCR extraction | Oriented card images | Language, segmentation mode, text blocks, clue numbering, answer boundary, OCR confidence | Category, ordered clues, answer, raw OCR, line/word confidence, text quality flags | Structured text is complete enough for review or explicitly pending |
-| LLM review and refinement | Every quiz card, its oriented image, and its OCR evidence | Category classification review, domain/content consistency review, and OCR corrections including clipped final characters, spelling substitutions, and Hungarian diacritics (`ő/ö/ó`, `ű/ü/ú`, `é`, `á`, `í`); never invent missing text or rewrite domain content | One immutable review event per quiz card, category/domain findings, accepted OCR corrections, evidence refs including text bounding boxes, model metadata, final card status | Final record has status `verified`, `model_uncertain`, `rejected`, or `failed` |
+| LLM review and refinement | Every extracted quiz text and its OCR artifact provenance | Category classification review, domain/content consistency review, and trusted OCR corrections including clipped final characters, spelling substitutions, and Hungarian diacritics (`ő/ö/ó`, `ű/ü/ú`, `é`, `á`, `í`); never invent quiz content or rewrite domain facts | One immutable review event per quiz card, category/domain findings, accepted OCR corrections, text-evidence refs, model metadata, final card status | Final record has status `verified`, `model_uncertain`, `rejected`, or `failed` |
 | Contract validation | All pool masters and the versioned specification | Schema, stage order, statuses, artifact references, final review statuses | Validation result JSON with master/spec hashes and errors | Every expected pool master is valid |
 | Processing report | Validated pool masters and validation results | Pool coverage, stage completion, counts, pending/failed items, quality KPIs | `processing_report.md` plus SHA-256 artifact record | Final report is reproducible and linked from each master |
 
@@ -199,8 +199,8 @@ An unavailable prerequisite is recorded as `pending` with an issue, not as `avai
 6. **Card layer**: emit standalone images only for accepted proposals. Keep rejected candidates linked in the master JSON.
 7. **Orientation layer**: estimate orientation before OCR and record the transform used.
 8. **OCR layer**: keep raw OCR, structured text, confidence, line coordinates, and parse warnings together.
-9. **Model review layer**: send every quiz card individually with the same versioned prompt and schema. Require category classification and domain/content audit findings, plus per-field OCR decisions, visible evidence, confidence, and an explicit no-invention outcome. Publish only evidence-backed OCR corrections; cache by image hash, prompt/schema hash, model/deployment, and stage parameters.
-10. **Post-OCR quality gate**: compare accepted corrections against the source image, oriented crop, OCR evidence, parser output, and crop provenance. Reject unsupported changes, preserve raw OCR, and mark unresolved cases `model_uncertain` rather than silently promoting them.
+9. **Model review layer**: send every extracted quiz text individually with the same versioned prompt and schema. Require category classification and domain/content audit findings, plus per-field OCR decisions, text evidence, confidence, and an explicit no-invention outcome. Trust valid Luna corrections over the OCR-derived fields; cache by quiz-text hash, prompt/schema hash, model/deployment, and stage parameters.
+10. **Post-OCR quality gate**: compare accepted corrections against the parsed OCR fields and extracted quiz context. Reject malformed or non-matching changes, preserve raw OCR, and mark unresolved cases `model_uncertain` rather than silently promoting them.
 11. **Contract validation**: validate every expected pool master and its final review statuses; write a validation result artifact with the specification and master hashes.
 12. **Processing report**: generate the cross-pool report only after validation passes, record its SHA-256 as an artifact in each master, and regenerate once after those terminal records are committed.
 
@@ -208,7 +208,7 @@ An unavailable prerequisite is recorded as `pending` with an issue, not as `avai
 
 A stage may run only when its input artifact hash, parameters, and implementation version differ from the prior stage record. Otherwise it writes `status: cached` and preserves the previous outputs. A later-stage change invalidates only its descendants, not unrelated verified artifacts.
 
-The cache key must include the content hash of every input artifact, not its path or modification time. For OCR it additionally includes language, Tesseract version, preprocessing, page segmentation mode, and parser version. For LLM review it includes image hash, prompt hash, deployment, API version, and review-schema version. Cache entries are immutable; a changed response is a new review event.
+The cache key must include the content hash of every input artifact, not its path or modification time. For OCR it additionally includes language, Tesseract version, preprocessing, page segmentation mode, and parser version. For LLM review it includes the extracted quiz-text hash, prompt hash, deployment, API version, and review-schema version. Cache entries are immutable; a changed response is a new review event.
 
 ## Failure prevention and recovery
 
@@ -269,8 +269,8 @@ OCR is an extraction result, not a final truth claim. Before a card can be marke
 2. **Orientation**: text is evaluated in the recorded upright orientation, with mixed or ambiguous orientation remaining review-pending.
 3. **Text evidence**: raw OCR, line/word coordinates, confidence, parser warnings, and answer-boundary evidence remain attached to every proposed correction.
 4. **Semantic structure**: category, ordered clues, and answer are checked for plausible field boundaries and card completeness. The model may repair recognition errors but must not invent absent text.
-5. **Visual agreement**: every accepted correction must be traceable to visible image evidence and identify the corrected field, old value, new value, confidence, and reason.
-6. **Hungarian character fidelity**: treat missing final letters and likely confusions such as `Ő/O/Ö/Ó`, `Ű/U/Ü/Ú`, `E/É`, `A/Á`, and `I/Í` as explicit correction hypotheses. Preserve the exact Unicode character supported by the pixels; never normalize diacritics away.
-7. **Spelling correction discipline**: a spelling change is accepted only when the source image visibly supports the replacement or an independent OCR/evidence pass agrees. Dictionary or language-model plausibility alone cannot change a name, answer, or clue.
+5. **Text-review agreement**: every accepted correction must identify the corrected field, exactly match the OCR old value, and include the model's language/context evidence, confidence, and reason.
+6. **Hungarian character fidelity**: treat missing final letters and likely confusions such as `Ő/O/Ö/Ó`, `Ű/U/Ü/Ú`, `E/É`, `A/Á`, and `I/Í` as explicit correction hypotheses. Preserve the exact Unicode character selected by Luna; never normalize diacritics away.
+7. **Spelling correction discipline**: a spelling change is accepted when Luna's trusted language/context review returns a valid correction whose old value matches the extracted OCR field. The model must not invent a name, answer, clue, or fact.
 8. **Schema and cache safety**: malformed, incomplete, stale, or cross-pool responses become failed review events; unchanged verified images are not sent again.
 9. **Terminal status**: each card ends as `verified`, `model_uncertain`, `rejected`, or `failed`, with unresolved warnings retained. Only then can contract validation and the report stage run.

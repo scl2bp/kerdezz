@@ -1,8 +1,7 @@
-"""Review every quiz OCR record with evidence-backed Hungarian text correction."""
+"""Review every extracted Hungarian quiz text with trusted language-model refinement."""
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -12,8 +11,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-IMPLEMENTATION_VERSION = "llm-review-v2"
-PROMPT_SCHEMA_VERSION = "hungarian-card-review-v2"
+IMPLEMENTATION_VERSION = "llm-review-v4"
+PROMPT_SCHEMA_VERSION = "hungarian-quiz-text-review-v4"
 REVIEW_SCOPE = "all_quiz_cards"
 REVIEW_THRESHOLD = 0.75
 TERMINAL_STATUSES = {"verified", "model_uncertain", "rejected", "failed"}
@@ -89,7 +88,6 @@ def build_review_queue(ocr_records: list[dict[str, Any]]) -> list[dict[str, Any]
             {
                 "card_id": record.get("card_id"),
                 "ocr_artifact_ref": record.get("artifact_ref"),
-                "oriented_image": record.get("oriented_image"),
                 "review_scope": REVIEW_SCOPE,
                 "reasons": ["full_quiz_review", *diagnostic_reasons],
             }
@@ -98,25 +96,25 @@ def build_review_queue(ocr_records: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def review_prompt(ocr: dict[str, Any]) -> str:
-    evidence = {
+    quiz_text = {
         "card_id": ocr.get("card_id"),
-        "raw_text": ocr.get("raw_text", ""),
-        "lines": ocr.get("lines", []),
-        "parsed": ocr.get("parsed", {}),
-        "confidence": ocr.get("confidence"),
-        "warnings": ocr.get("warnings", []),
+        "category": ocr.get("parsed", {}).get("category", ""),
+        "clues": ocr.get("parsed", {}).get("clues", []),
+        "answer": ocr.get("parsed", {}).get("answer", ""),
     }
     return (
-        "Review this Hungarian quiz card image and its OCR evidence. Return JSON only. "
+        "Review the extracted Hungarian quiz text below. Return JSON only. "
         "This is a full review of one quiz card, not a selective spot check. First review the "
-        "printed category classification, then review the domain/content coherence of the clues "
-        "without rewriting factual content. Finally inspect OCR for clipped final characters, "
+        "category classification, then review the domain/content coherence of the clues "
+        "without rewriting factual content. Finally inspect the extracted text for clipped final characters, "
         "spelling substitutions, punctuation noise, and Hungarian diacritics including ő/ö/ó, "
-        "ű/ü/ú, é, á, and í. Only correct OCR when the pixels support the correction. "
-        "Do not use linguistic plausibility alone and do not invent text that is not visible. "
+        "ű/ü/ú, é, á, and í. Use your Hungarian language knowledge and quiz context to correct "
+        "likely OCR errors. Accepted corrections replace the OCR values in the refined output. "
+        "Do not invent clues, answers, or facts that are not represented by the extracted text. "
         "Category and domain findings are audit metadata; only the corrections array may change "
         "the downstream final OCR fields. Set no_invention to true only when every accepted "
-        "correction is visibly supported. Use parsed OCR values exactly in old_value. "
+        "correction is supported by the extracted text and language/context review. "
+        "Use parsed OCR values exactly in old_value. "
         "Schema: {decision: verified|corrected|model_uncertain|rejected|failed, "
         "confidence: number 0..1, no_invention: boolean, reason: string, "
         "category_review: {observed_category: string, assessment: confirmed|ocr_error|uncertain, "
@@ -124,7 +122,7 @@ def review_prompt(ocr: dict[str, Any]) -> str:
         "domain_review: {assessment: consistent|possible_issue|uncertain, findings: [string], "
         "evidence: [string], confidence: number}, corrections: [{field: category|answer|clues, "
         "old_value: string, new_value: string, evidence: [string], confidence: number}]}.\n\n"
-        + json.dumps(evidence, ensure_ascii=False, indent=2)
+        + json.dumps(quiz_text, ensure_ascii=False, indent=2)
     )
 
 
@@ -143,7 +141,7 @@ def _content_from_completion(completion: Any) -> str:
     raise ValueError("model response contains no text content")
 
 
-def azure_review(image_path: Path, prompt: str, endpoint: str, deployment: str) -> dict[str, Any]:
+def azure_review(prompt: str, endpoint: str, deployment: str) -> dict[str, Any]:
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
     from openai import AzureOpenAI
 
@@ -156,18 +154,11 @@ def azure_review(image_path: Path, prompt: str, endpoint: str, deployment: str) 
         azure_ad_token_provider=token_provider,
         api_version="2025-01-01-preview",
     )
-    encoded_image = base64.b64encode(image_path.read_bytes()).decode("ascii")
     completion = client.chat.completions.create(
         model=deployment,
         messages=[
-            {"role": "developer", "content": "You review Hungarian OCR conservatively and return JSON only."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}},
-                ],
-            },
+            {"role": "developer", "content": "You review Hungarian quiz OCR as a trusted language editor and return JSON only."},
+            {"role": "user", "content": prompt},
         ],
         max_completion_tokens=3000,
         response_format={"type": "json_object"},
@@ -202,7 +193,7 @@ def validate_response(response: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if recommended_category is not None and not isinstance(recommended_category, str):
         errors.append("category_review.recommended_category must be a string or null")
     if not isinstance(category_review.get("evidence"), list) or not category_review["evidence"] or not all(isinstance(item, str) and item.strip() for item in category_review["evidence"]):
-        errors.append("category_review.evidence must contain visible-evidence strings")
+        errors.append("category_review.evidence must contain text-evidence strings")
     if not isinstance(category_review.get("confidence"), (int, float)) or not 0 <= float(category_review.get("confidence", -1)) <= 1:
         errors.append("category_review.confidence must be a number from 0 to 1")
     domain_review = response.get("domain_review")
@@ -232,7 +223,7 @@ def validate_response(response: Any) -> tuple[dict[str, Any] | None, list[str]]:
                 errors.append(f"{prefix}.{field} must be a non-empty string")
         evidence = correction.get("evidence")
         if not isinstance(evidence, list) or not evidence or not all(isinstance(item, str) and item.strip() for item in evidence):
-            errors.append(f"{prefix}.evidence must contain visible-evidence strings")
+            errors.append(f"{prefix}.evidence must contain text-evidence strings")
         if not isinstance(correction.get("confidence"), (int, float)) or not 0 <= float(correction["confidence"]) <= 1:
             errors.append(f"{prefix}.confidence must be a number from 0 to 1")
     if decision == "corrected" and not corrections:
@@ -267,7 +258,7 @@ def review_records(
     enable_model: bool,
     endpoint: str | None,
     deployment: str | None,
-    review_fn: Callable[[Path, str, str, str], dict[str, Any]] = azure_review,
+    review_fn: Callable[[str, str, str], dict[str, Any]] = azure_review,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str], dict[str, Any]]:
     ocr_by_card = {str(item.get("card_id")): item for item in ocr_records}
     cards_by_id = {str(item.get("card_id")): item for item in cards}
@@ -294,17 +285,11 @@ def review_records(
         if not ocr or not card:
             errors.append(f"{card_id}: review input is incomplete")
             continue
-        image_ref = ocr.get("oriented_image") or card.get("image_ref") or {}
-        image_path = root / str(image_ref.get("path", ""))
-        if not image_path.is_file():
-            errors.append(f"{card_id}: review image is missing")
-            continue
-        image_sha256 = str(image_ref.get("sha256") or sha256_file(image_path))
         prompt = review_prompt(ocr)
-        cache_key = object_hash({"image_sha256": image_sha256, "prompt": prompt, "deployment": deployment, "schema": PROMPT_SCHEMA_VERSION, "implementation_version": IMPLEMENTATION_VERSION})
+        cache_key = object_hash({"quiz_text": ocr.get("parsed", {}), "prompt": prompt, "deployment": deployment, "schema": PROMPT_SCHEMA_VERSION, "implementation_version": IMPLEMENTATION_VERSION})
         review_id = f"review_{card_id}_{cache_key[:16]}"
         review_dir = pool_root / "reviews" / review_id
-        request = {"artifact_type": "llm_review_request", "review_id": review_id, "card_id": card_id, "image": {"path": relative(image_path, root), "sha256": image_sha256}, "ocr_artifact_ref": ocr.get("artifact_ref"), "prompt_schema": PROMPT_SCHEMA_VERSION, "prompt": prompt, "cache_key": cache_key, "created_at_utc": utc_now()}
+        request = {"artifact_type": "llm_review_request", "review_id": review_id, "card_id": card_id, "review_scope": REVIEW_SCOPE, "ocr_artifact_ref": ocr.get("artifact_ref"), "quiz_text": ocr.get("parsed", {}), "prompt_schema": PROMPT_SCHEMA_VERSION, "prompt": prompt, "cache_key": cache_key, "created_at_utc": utc_now()}
         request_hash = atomic_json(review_dir / "request.json", request)
         artifacts.append({"path": relative(review_dir / "request.json", root), "sha256": request_hash})
         response: Any = cache.get(cache_key)
@@ -314,7 +299,7 @@ def review_records(
                 continue
             source = "model"
             try:
-                response = review_fn(image_path, prompt, endpoint, deployment)
+                response = review_fn(prompt, endpoint, deployment)
             except Exception as error:
                 errors.append(f"{card_id}: model review failed: {error}")
                 response = {"decision": "failed", "confidence": 0.0, "no_invention": True, "reason": str(error), "corrections": []}
