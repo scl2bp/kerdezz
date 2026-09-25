@@ -13,7 +13,7 @@ def test_report_distinguishes_validated_contract_from_unexecuted_pipeline() -> N
     spec = json.loads((ROOT / "pipeline_spec.json").read_text(encoding="utf-8"))
     report = render_report(spec, [], [], [])
     assert "Contract validation: **PASS**" in report
-    assert "Processing masters found: **0** of 2 expected pools" in report
+    assert "Processing masters found: **0**" in report
     assert "Pipeline stage records attempted: **0**" in report
     assert "| Unexecuted planned stages | 11 |" in report
     assert "archive processing and downstream stages are not yet executed" in report
@@ -40,7 +40,7 @@ def test_report_aggregates_master_kpis() -> None:
         [ROOT / "pipeline/original/processing_master.json"],
         [],
     )
-    assert "Processing masters found: **1** of 2 expected pools" in report
+    assert "Processing masters found: **1**" in report
     assert "Pipeline stage records attempted: **1**" in report
     assert "| Source artifacts | 1 |" in report
     assert "| Card artifacts | 1 |" in report

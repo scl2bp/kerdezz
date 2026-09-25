@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate one concise Markdown report for the complete quiz-card pipeline."""
+"""Generate one concise Markdown report for a quiz-card pool."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from contract_validator import validate_files
 
 ROOT = Path(__file__).parent
 DEFAULT_SPEC = ROOT / "pipeline_spec.json"
-DEFAULT_OUTPUT = ROOT / "processing_report.md"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -77,7 +76,7 @@ def stage_scope(stage_id: str, masters: list[dict[str, Any]]) -> str:
     if stage_id == "contract_validation":
         return f"{len(quality_values)} master validations"
     if stage_id == "processing_report":
-        return "combined report artifact"
+        return "pool report artifact"
     return ""
 
 
@@ -146,7 +145,7 @@ def render_report(
         "## Executive outcome",
         "",
         f"- Contract validation: **{contract_status}**",
-        f"- Processing masters found: **{len(masters)}** of 2 expected pools",
+        f"- Processing masters found: **{len(masters)}**",
         f"- Pipeline stages defined: **{len(spec.get('stages', []))}**",
         f"- Pipeline stage records attempted: **{attempted_stage_records}**",
         (
@@ -235,12 +234,15 @@ def render_report(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC)
-    parser.add_argument("--master", type=Path, action="append", help="Master JSON path; repeat for multiple pools.")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--pool", choices=("original", "children"), required=True)
+    parser.add_argument("--master", type=Path, help="Pool master JSON path; defaults to pipeline/<pool>/processing_master.json.")
+    parser.add_argument("--output", type=Path, help="Report path; defaults to pipeline/<pool>/processing_report.md.")
     args = parser.parse_args()
 
     spec = load_json(args.spec)
-    master_paths = list(args.master) if args.master else discover_masters(ROOT)
+    master_path = args.master or ROOT / "pipeline" / args.pool / "processing_master.json"
+    output = args.output or ROOT / "pipeline" / args.pool / "processing_report.md"
+    master_paths = [master_path]
     masters: list[dict[str, Any]] = []
     contract_errors = validate_files(args.spec)
     for path in master_paths:
@@ -251,11 +253,12 @@ def main() -> int:
             continue
         masters.append(master)
         contract_errors.extend(f"{path}: {error}" for error in validate_files(args.spec, path))
-    args.output.write_text(
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         render_report(spec, masters, master_paths, contract_errors),
         encoding="utf-8",
     )
-    print(args.output)
+    print(output)
     return 0 if not contract_errors else 1
 
 

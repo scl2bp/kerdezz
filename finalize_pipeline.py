@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate completed pool masters and publish the combined processing report."""
+"""Validate one completed pool master and publish its processing report."""
 
 from __future__ import annotations
 
@@ -82,10 +82,12 @@ def artifact_reference_errors(master: dict[str, Any], root: Path) -> list[str]:
     return errors
 
 
-def finalize(root: Path, require_llm: bool) -> Path:
+def finalize(root: Path, require_llm: bool, pool_id: str) -> Path:
     spec_path = root / "pipeline_spec.json"
     spec = load_json(spec_path)
-    master_paths = [root / "pipeline" / pool / "processing_master.json" for pool in EXPECTED_POOLS]
+    if pool_id not in EXPECTED_POOLS:
+        raise ValueError(f"unknown pool: {pool_id}")
+    master_paths = [root / "pipeline" / pool_id / "processing_master.json"]
     missing = [str(path) for path in master_paths if not path.is_file()]
     if missing:
         raise ValueError("missing expected pool master(s): " + ", ".join(missing))
@@ -124,7 +126,7 @@ def finalize(root: Path, require_llm: bool) -> Path:
                 "input": {"artifact_refs": [{"path": str(path.relative_to(root)), "sha256": sha256_file(path)}, {"path": str(spec_path.relative_to(root)), "sha256": validation_document["spec_sha256"]}], "required_information": record["input"]["required_information"], "fingerprint": object_hash({"master": sha256_file(path), "spec": validation_document["spec_sha256"]})},
                 "outputs": {"artifact_refs": [{"path": str(validation_path.relative_to(root)), "sha256": validation_sha}], "records": [validation_document], "fingerprint": validation_sha},
                 "quality": {"confidence": 1.0, "review_required": False, "errors": [], "warnings": []},
-                "handoff": {"accepted_refs": [master["pool_id"]], "pending_refs": [], "rejected_refs": [], "reason": "validated master is ready for combined reporting"},
+                "handoff": {"accepted_refs": [master["pool_id"]], "pending_refs": [], "rejected_refs": [], "reason": "validated master is ready for pool reporting"},
             }
         )
         report_record = report_stage(master)
@@ -133,18 +135,18 @@ def finalize(root: Path, require_llm: bool) -> Path:
                 "status": "available",
                 "started_at_utc": generated,
                 "completed_at_utc": generated,
-                "cache": {"key": object_hash({"masters": [str(item) for item in master_paths], "generator": "processing-report-v2"}), "parameters": {}, "reused": False, "source_stage_run": None},
-                "input": {"artifact_refs": [{"path": str(item.relative_to(root))} for item in master_paths], "required_information": report_record["input"]["required_information"], "fingerprint": object_hash([str(item) for item in master_paths])},
-                "outputs": {"artifact_refs": [{"path": "processing_report.md"}], "records": [], "fingerprint": ""},
+                "cache": {"key": object_hash({"master": str(path), "generator": "processing-report-v3", "pool_id": master["pool_id"]}), "parameters": {"pool_id": master["pool_id"]}, "reused": False, "source_stage_run": None},
+                "input": {"artifact_refs": [{"path": str(path.relative_to(root))}], "required_information": report_record["input"]["required_information"], "fingerprint": object_hash(str(path))},
+                "outputs": {"artifact_refs": [{"path": f"pipeline/{master['pool_id']}/processing_report.md"}], "records": [], "fingerprint": ""},
                 "quality": {"confidence": 1.0, "review_required": False, "errors": [], "warnings": []},
-                "handoff": {"accepted_refs": ["processing_report.md"], "pending_refs": [], "rejected_refs": [], "reason": "combined report is ready as a terminal artifact"},
+                "handoff": {"accepted_refs": [f"pipeline/{master['pool_id']}/processing_report.md"], "pending_refs": [], "rejected_refs": [], "reason": "pool report is ready as a terminal artifact"},
             }
         )
 
     for path, master in zip(master_paths, masters):
         write_json(path, master)
 
-    report_path = root / "processing_report.md"
+    report_path = root / "pipeline" / pool_id / "processing_report.md"
     report_errors: list[str] = []
     for path in master_paths:
         report_errors.extend(f"{path}: {error}" for error in validate_files(spec_path, path))
@@ -155,7 +157,7 @@ def finalize(root: Path, require_llm: bool) -> Path:
     for path, master in zip(master_paths, masters):
         report_stage(master)["outputs"] = {
             "artifact_refs": [{"path": str(report_path.relative_to(root)), "sha256": report_sha}],
-            "records": [{"pool_id": item["pool_id"], "master_path": str(master_path.relative_to(root))} for item, master_path in zip(masters, master_paths)],
+            "records": [{"pool_id": master["pool_id"], "master_path": str(path.relative_to(root))}],
             "fingerprint": report_sha,
         }
         write_json(path, master)
@@ -171,10 +173,11 @@ def finalize(root: Path, require_llm: bool) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--pool", choices=EXPECTED_POOLS, required=True)
     parser.add_argument("--require-llm", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     try:
-        report_path = finalize(args.root.resolve(), args.require_llm)
+        report_path = finalize(args.root.resolve(), args.require_llm, args.pool)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

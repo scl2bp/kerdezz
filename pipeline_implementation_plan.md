@@ -135,7 +135,7 @@ The default exploratory run should be `--pool original --limit 3 --until classif
 | OCR extraction | Oriented card images | Language, segmentation mode, text blocks, clue numbering, answer boundary, OCR confidence | Category, ordered clues, answer, raw OCR, line/word confidence, text quality flags | Structured text is complete enough for review or explicitly pending |
 | LLM review and refinement | Every extracted quiz text and its OCR artifact provenance | Compact category/domain assessment and OCR review; keep valid text unchanged, use `corrected` for clear OCR errors, and use `modified` only for an intentional content change with a reason | One immutable compact review event per quiz card with `assessment`, complete `final_fields`, category assessment, and domain assessment | Final record has status `verified` or `failed` |
 | Contract validation | All pool masters and the versioned specification | Schema, stage order, statuses, artifact references, final review statuses | Validation result JSON with master/spec hashes and errors | Every expected pool master is valid |
-| Processing report | Validated pool masters and validation results | Pool coverage, stage completion, counts, pending/failed items, quality KPIs | `processing_report.md` plus SHA-256 artifact record | Final report is reproducible and linked from each master |
+| Processing report | One validated pool master and its validation result | Pool stage completion, counts, pending/failed items, quality KPIs | `pipeline/<pool>/processing_report.md` plus SHA-256 artifact record | Pool report is reproducible and linked from its master |
 
 ## Required stage record
 

@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ REVIEW_THRESHOLD = 0.75
 TERMINAL_STATUSES = {"verified", "model_uncertain", "rejected", "failed"}
 DEFAULT_ENDPOINT = "https://ae-oa-d-we-004.openai.azure.com/"
 DEFAULT_DEPLOYMENT = "gpt-5.6-luna"
-DEFAULT_REASONING_EFFORT = "medium"
+DEFAULT_REASONING_EFFORT = "low"
 REASONING_EFFORTS = {"low", "medium"}
 NOISE_TOKENS = {"!", "]", "[", "j", "i", "he", "gi", "rtl", "meleg"}
 
@@ -132,7 +133,8 @@ def _content_from_completion(completion: Any) -> str:
     raise ValueError("model response contains no text content")
 
 
-def azure_review(prompt: str, endpoint: str, deployment: str, reasoning_effort: str) -> dict[str, Any]:
+@lru_cache(maxsize=4)
+def _azure_client(endpoint: str) -> Any:
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
     from openai import AzureOpenAI
 
@@ -140,11 +142,15 @@ def azure_review(prompt: str, endpoint: str, deployment: str, reasoning_effort: 
         DefaultAzureCredential(),
         "https://cognitiveservices.azure.com/.default",
     )
-    client = AzureOpenAI(
+    return AzureOpenAI(
         azure_endpoint=endpoint,
         azure_ad_token_provider=token_provider,
         api_version="2025-01-01-preview",
     )
+
+
+def azure_review(prompt: str, endpoint: str, deployment: str, reasoning_effort: str) -> dict[str, Any]:
+    client = _azure_client(endpoint)
     completion = client.chat.completions.create(
         model=deployment,
         messages=[

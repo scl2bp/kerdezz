@@ -241,11 +241,11 @@
     {
       "id": "processing_report",
       "name": "Processing report",
-      "input": ["validated pool masters", "validation result artifacts"],
-      "requires": ["all expected pool masters are present", "contract validation passed", "stage and artifact counts are reproducible"],
+      "input": ["validated pool master", "validation result artifact"],
+      "requires": ["the selected pool master is present", "contract validation passed", "stage and artifact counts are reproducible"],
       "decisions": ["report_generated", "report_blocked"],
-      "outputs": ["processing_report.md", "report artifact hash", "pool and stage KPI summary"],
-      "failure_modes": ["missing pool master", "contract validation failure", "report write failure", "inconsistent pool counts"],
+      "outputs": ["pool processing_report.md", "report artifact hash", "pool and stage KPI summary"],
+      "failure_modes": ["missing pool master", "contract validation failure", "report write failure"],
       "handoff": "final_artifacts",
       "cache_key": ["validated_master_hashes", "report_generator_version"]
     }

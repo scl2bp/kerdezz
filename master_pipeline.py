@@ -197,6 +197,122 @@ def make_stage(stage: dict[str, Any], status: str, *, reason: str, run_id: str, 
     }
 
 
+def _load_artifact_records(directory: Path, filename: str, root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    records: list[dict[str, Any]] = []
+    references: list[dict[str, str]] = []
+    for path in sorted(directory.glob(f"*/{filename}")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        reference = {"path": relative(path, root), "sha256": sha256_file(path)}
+        record.setdefault("artifact_ref", reference)
+        records.append(record)
+        references.append(reference)
+    return records, references
+
+
+def recover_master_from_artifacts(spec: dict[str, Any], pool_id: str, root: Path = ROOT) -> dict[str, Any]:
+    pool_root = root / "pipeline" / pool_id
+    master_path = pool_root / "processing_master.json"
+    if not master_path.is_file():
+        raise ValueError(f"existing processing master does not exist: {master_path}")
+    master = json.loads(master_path.read_text(encoding="utf-8"))
+    existing_artifacts = master.setdefault("artifacts", {})
+    cards, card_refs = _load_artifact_records(pool_root / "cards", "card.json", root)
+    orientations, orientation_refs = _load_artifact_records(pool_root / "orientation", "orientation.json", root)
+    ocr_records, ocr_refs = _load_artifact_records(pool_root / "ocr", "ocr.json", root)
+    if not cards or not ocr_records:
+        raise ValueError(f"cannot recover {pool_id}: card/OCR artifacts are incomplete")
+    orientation_by_card = {item["card_id"]: item for item in orientations}
+    ocr_by_card = {item["card_id"]: item for item in ocr_records}
+    for card in cards:
+        card_id = card["card_id"]
+        if card_id in orientation_by_card:
+            card["orientation_ref"] = orientation_by_card[card_id]["artifact_ref"]
+        if card_id in ocr_by_card:
+            card["ocr_ref"] = ocr_by_card[card_id]["artifact_ref"]
+
+    collections: list[dict[str, Any]] = []
+    collection_refs: list[dict[str, str]] = []
+    for manifest_path in sorted((pool_root / "collections").glob("**/*.json")):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        collection = {
+            "collection_id": manifest["collection_id"],
+            "image_path": manifest["image_path"],
+            "image_sha256": manifest["image_sha256"],
+            "manifest_path": relative(manifest_path, root),
+            "manifest_sha256": sha256_file(manifest_path),
+            "source_count": manifest.get("cell_count", len(manifest.get("cells", []))),
+        }
+        collections.append(collection)
+        collection_refs.extend(
+            [
+                {"path": collection["image_path"], "sha256": collection["image_sha256"]},
+                {"path": collection["manifest_path"], "sha256": collection["manifest_sha256"]},
+            ]
+        )
+    regions, region_refs = _load_artifact_records(pool_root / "regions", "*.json", root)
+    if not regions:
+        region_paths = sorted((pool_root / "regions").glob("*/*.json"))
+        for path in region_paths:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            reference = {"path": relative(path, root), "sha256": sha256_file(path)}
+            record.setdefault("artifact_ref", reference)
+            regions.append(record)
+            region_refs.append(reference)
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-recovered"
+
+    def recovered_stage(index: int, records: list[dict[str, Any]], references: list[dict[str, str]], reason: str) -> dict[str, Any]:
+        stage = make_stage(spec["stages"][index], "available", reason=reason, run_id=run_id, started=utc_now())
+        stage["outputs"] = {"artifact_refs": references, "records": records, "fingerprint": object_hash(records)}
+        stage["quality"] = {"confidence": 1.0, "review_required": False, "errors": [], "warnings": []}
+        stage["handoff"] = {"accepted_refs": [item.get("card_id", item.get("source_id", item.get("region_id", ""))) for item in records], "pending_refs": [], "rejected_refs": [], "reason": reason}
+        return stage
+
+    stages = [make_stage(stage, "pending", reason="not recovered", run_id=run_id) for stage in spec["stages"]]
+    current_stages = master.get("processing", {}).get("stages", [])
+    if current_stages:
+        stages[0] = current_stages[0]
+        stages[1] = current_stages[1]
+    stages[2] = recovered_stage(2, collections, collection_refs, "collection artifacts recovered")
+    stages[3] = recovered_stage(3, [], [], "classification stage represented by persisted region artifacts")
+    stages[4] = recovered_stage(4, regions, region_refs, "region proposal artifacts recovered")
+    stages[5] = recovered_stage(5, cards, card_refs, "card artifacts recovered")
+    stages[6] = recovered_stage(6, orientations, orientation_refs, "orientation artifacts recovered")
+    stages[7] = recovered_stage(7, ocr_records, ocr_refs, "OCR artifacts recovered")
+    existing_artifacts.update(
+        {
+            "collections": collections,
+            "classifications": [],
+            "classification_features": [],
+            "classification_evaluations": [],
+            "regions": regions,
+            "cards": cards,
+            "orientations": orientations,
+            "ocr": ocr_records,
+            "reviews": [],
+        }
+    )
+    master["processing"] = {"stage_order": [stage["id"] for stage in spec["stages"]], "stages": stages}
+    master["quality_summary"] = {
+        "archive_errors": 0,
+        "source_errors": 0,
+        "collection_errors": 0,
+        "classification_errors": 0,
+        "layout_errors": 0,
+        "card_errors": 0,
+        "orientation_errors": 0,
+        "ocr_errors": 0,
+        "review_errors": 0,
+        "selected_member_count": len(existing_artifacts.get("sources", [])),
+    }
+    master["run"] = {**master.get("run", {}), "run_id": run_id, "until": "ocr", "recovered": True}
+    errors = validate_master(master, spec)
+    if errors:
+        raise ValueError("recovered master failed contract validation: " + "; ".join(errors))
+    atomic_json(master_path, master)
+    return master
+
+
 def inventory_archive(archive_path: Path, pool_id: str, root: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     archive_hash = sha256_file(archive_path)
     members: list[dict[str, Any]] = []
@@ -631,7 +747,10 @@ def review_existing_master(
     cards = artifacts.get("cards", [])
     ocr_records = artifacts.get("ocr", [])
     if not isinstance(cards, list) or not isinstance(ocr_records, list) or not cards or not ocr_records:
-        raise ValueError("existing processing master has no reusable cards and OCR records")
+        master = recover_master_from_artifacts(spec, pool_id, root)
+        artifacts = master["artifacts"]
+        cards = artifacts["cards"]
+        ocr_records = artifacts["ocr"]
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     reviews, review_artifacts, review_errors, review_summary = review_records(
@@ -678,6 +797,12 @@ def review_existing_master(
     return master, master_path
 
 
+def finalize_pool_report(root: Path, pool_id: str) -> Path:
+    from finalize_pipeline import finalize
+
+    return finalize(root, require_llm=True, pool_id=pool_id)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool", choices=sorted(ARCHIVES), required=True)
@@ -704,9 +829,28 @@ def main() -> int:
                 llm_deployment=args.llm_deployment,
                 llm_reasoning_effort=args.llm_reasoning_effort,
             )
+            report_path = finalize_pool_report(ROOT, args.pool)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             parser.error(str(error))
-        print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": "llm_review", "review_only": True, "cards": len(master["artifacts"]["cards"])}, ensure_ascii=False))
+        print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": "llm_review", "review_only": True, "cards": len(master["artifacts"]["cards"]), "report": relative(report_path)}, ensure_ascii=False))
+        return 0
+    if args.resume:
+        try:
+            master, master_path = review_existing_master(
+                load_spec(),
+                args.pool,
+                enable_llm_review=True,
+                llm_endpoint=args.llm_endpoint,
+                llm_deployment=args.llm_deployment,
+                llm_reasoning_effort=args.llm_reasoning_effort,
+            )
+            report_path = finalize_pool_report(ROOT, args.pool)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            parser.error(str(error))
+        result = {"master": relative(master_path), "pool_id": master["pool_id"], "until": "llm_review", "resume": True, "cards": len(master["artifacts"]["cards"])}
+        if report_path is not None:
+            result["report"] = relative(report_path)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     archive_path = ARCHIVES[args.pool]
     if not archive_path.is_file():

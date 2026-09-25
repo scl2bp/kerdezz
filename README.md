@@ -81,18 +81,18 @@ The existing `pipeline.py` is a legacy SQLite-oriented ledger and must not be tr
 
 ## Processing report
 
-Generate the single presentation report for the whole pipeline with:
+Generate a presentation report for one completed pool with:
 
 ```bash
-python generate_processing_report.py
+python generate_processing_report.py --pool original
 ```
 
-The command writes [processing_report.md](processing_report.md). It reads the contract and any `pipeline/<pool>/processing_master.json` files, then reports contract validity, stage statuses, pool coverage, source/region/card/review counts, cache and failure counts, and the next automated gate. The report distinguishes validated planning from processing that has actually executed.
+The command writes `pipeline/<pool>/processing_report.md`. It reports contract validity, stage statuses, source/region/card/review counts, cache and failure counts, and the next automated gate for that pool.
 
-After the full-card LLM review, the finalization sequence validates both pool masters and then promotes this report into the terminal pipeline artifacts:
+After a pool's full-card LLM review, finalize that pool:
 
 ```bash
-python finalize_pipeline.py --root . --require-llm
+python finalize_pipeline.py --root . --pool original --require-llm
 ```
 
-Finalization is deliberately cross-pool. It writes a validation result artifact, records the report artifact and SHA-256 in each pool master, and regenerates the combined report from the validated masters. The report generator also validates every discovered master independently; it is not only a formatter.
+Finalization writes the pool's validation result and records the pool report artifact and SHA-256 in that pool's master. The other pool is not required to exist or be complete.

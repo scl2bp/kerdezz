@@ -22,15 +22,15 @@ def test_finalize_publishes_validation_and_report_artifacts(tmp_path: Path) -> N
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
 
-    report_path = finalize(tmp_path, require_llm=True)
+    report_path = finalize(tmp_path, require_llm=True, pool_id="original")
 
-    assert report_path == tmp_path / "processing_report.md"
+    assert report_path == tmp_path / "pipeline" / "original" / "processing_report.md"
     assert report_path.is_file()
-    for pool_id in ("original", "children"):
-        master_path = tmp_path / "pipeline" / pool_id / "processing_master.json"
-        master = json.loads(master_path.read_text(encoding="utf-8"))
-        assert validate_master(master, spec) == []
-        stages = {stage["stage_id"]: stage for stage in master["processing"]["stages"]}
-        assert stages["contract_validation"]["status"] == "available"
-        assert stages["processing_report"]["status"] == "available"
-        assert stages["processing_report"]["outputs"]["artifact_refs"][0]["sha256"]
+    master_path = tmp_path / "pipeline" / "original" / "processing_master.json"
+    master = json.loads(master_path.read_text(encoding="utf-8"))
+    assert validate_master(master, spec) == []
+    stages = {stage["stage_id"]: stage for stage in master["processing"]["stages"]}
+    assert stages["contract_validation"]["status"] == "available"
+    assert stages["processing_report"]["status"] == "available"
+    assert stages["processing_report"]["outputs"]["artifact_refs"][0]["sha256"]
+    assert not (tmp_path / "processing_report.md").exists()
