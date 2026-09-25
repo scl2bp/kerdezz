@@ -221,8 +221,8 @@
       "name": "LLM review and refinement",
       "input": ["all extracted quiz text", "OCR artifact provenance"],
       "requires": ["prompt/schema hash", "model/deployment", "quiz text hash", "response cache key", "one request per quiz card", "category review", "domain content review"],
-      "decisions": ["accept trusted language-model OCR correction", "record category classification finding", "record domain content finding", "reject automated correction", "model_uncertain", "model_review_failed"],
-      "outputs": ["immutable review event per quiz card", "accepted OCR field corrections", "category and domain audit findings", "evidence references", "final card status"],
+      "decisions": ["unchanged", "corrected", "modified", "failed"],
+      "outputs": ["immutable compact review event per quiz card", "final_fields", "category assessment", "domain assessment", "final card status"],
       "failure_modes": ["authentication failure", "malformed response", "schema validation failure", "invented or unsupported correction", "timeout", "missing text input"],
       "handoff": "final_artifacts",
       "cache_key": ["quiz_text_hash", "prompt_hash", "deployment", "review_parameters", "implementation_version"]

@@ -70,38 +70,38 @@ def test_queue_includes_high_level_ocr_with_low_confidence_noise(tmp_path: Path)
     assert "low_confidence_noise:j" in queue[0]["reasons"]
 
 
-def test_review_accepts_visible_diacritic_correction_without_mutating_ocr(tmp_path: Path) -> None:
+def test_review_accepts_compact_correction_without_mutating_ocr(tmp_path: Path) -> None:
     ocr = _ocr(tmp_path)
     card = {"card_id": "card-1", "image_ref": ocr["oriented_image"]}
 
-    def fake_review(prompt: str, endpoint: str, deployment: str) -> dict:
+    def fake_review(prompt: str, endpoint: str, deployment: str, reasoning_effort: str) -> dict:
         return {
-            "decision": "corrected",
-            "confidence": 0.98,
-            "no_invention": True,
-            "reason": "The Hungarian language context supports the corrected answer.",
-            "category_review": {
-                "observed_category": "FOGALOM",
-                "assessment": "confirmed",
-                "recommended_category": None,
-                "evidence": ["category value is FOGALOM in the extracted quiz text"],
-                "confidence": 0.98,
-            },
-            "domain_review": {
-                "assessment": "consistent",
-                "findings": [],
-                "evidence": ["clue and answer content are coherent in the extracted quiz text"],
-                "confidence": 0.9,
-            },
-            "corrections": [
-                {
-                    "field": "answer",
-                    "old_value": "TÖRŐ",
-                    "new_value": "TÖRŐ",
-                    "evidence": ["Hungarian word context supports the ő spelling"],
-                    "confidence": 0.98,
-                }
-            ],
+            "assessment": "corrected",
+            "category_assessment": "confirmed",
+            "domain_assessment": "consistent",
+            "final_fields": {"category": "FOGALOM", "clues": ["A torony"], "answer": "TÖRŐŐ"},
+        }
+
+    reviews, _, errors, summary = review_records(
+        [ocr], [card], tmp_path, tmp_path / "pool", enable_model=True, endpoint="endpoint", deployment="deployment", reasoning_effort="low", review_fn=fake_review
+    )
+
+    assert not errors
+    assert summary["verified_count"] == 1
+    assert reviews[0]["final_fields"]["answer"] == "TÖRŐŐ"
+    assert ocr["parsed"]["answer"] == "TÖRŐ"
+
+
+def test_unchanged_review_keeps_original_text(tmp_path: Path) -> None:
+    ocr = _ocr(tmp_path)
+    card = {"card_id": "card-1"}
+
+    def fake_review(prompt: str, endpoint: str, deployment: str, reasoning_effort: str) -> dict:
+        return {
+            "assessment": "unchanged",
+            "category_assessment": "confirmed",
+            "domain_assessment": "consistent",
+            "final_fields": ocr["parsed"],
         }
 
     reviews, _, errors, summary = review_records(
@@ -110,33 +110,18 @@ def test_review_accepts_visible_diacritic_correction_without_mutating_ocr(tmp_pa
 
     assert not errors
     assert summary["verified_count"] == 1
-    assert reviews[0]["final_fields"]["answer"] == "TÖRŐ"
-    assert ocr["parsed"]["answer"] == "TÖRŐ"
+    assert reviews[0]["assessment"] == "unchanged"
+    assert reviews[0]["final_fields"] == ocr["parsed"]
 
 
-def test_invalid_correction_value_becomes_failed_response() -> None:
+def test_compact_response_validation() -> None:
     response, errors = validate_response(
         {
-            "decision": "corrected",
-            "confidence": 0.9,
-            "no_invention": True,
-            "reason": "correction",
-            "category_review": {
-                "observed_category": "FOGALOM",
-                "assessment": "confirmed",
-                "recommended_category": None,
-                "evidence": ["category heading"],
-                "confidence": 0.9,
-            },
-            "domain_review": {
-                "assessment": "consistent",
-                "findings": [],
-                "evidence": ["visible clue text"],
-                "confidence": 0.9,
-            },
-            "corrections": [
-                {"field": "answer", "old_value": "X", "new_value": "Y", "evidence": ["box"], "confidence": 0.9}
-            ],
+            "assessment": "modified",
+            "category_assessment": "confirmed",
+            "domain_assessment": "consistent",
+            "final_fields": {"category": "FOGALOM", "clues": ["A torony"], "answer": "Y"},
+            "reason": "The extracted answer was changed.",
         }
     )
     assert errors == []

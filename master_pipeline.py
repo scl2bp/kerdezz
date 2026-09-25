@@ -21,6 +21,7 @@ from card_extraction import extract_cards
 from contract_validator import validate_master
 from layout_fine_tuning import fine_tune_layouts
 from llm_review import review_records
+from llm_review import DEFAULT_REASONING_EFFORT, REASONING_EFFORTS
 from orientation_estimation import estimate_orientations
 from ocr_extraction import extract_ocr
 
@@ -318,6 +319,7 @@ def build_master(
     llm_endpoint: str | None = None,
     llm_deployment: str | None = None,
     enable_llm_review: bool = False,
+    llm_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ) -> tuple[dict[str, Any], Path]:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     run_root = root / "pipeline" / pool_id / "runs" / run_id
@@ -567,6 +569,7 @@ def build_master(
                 enable_model=enable_llm_review,
                 endpoint=llm_endpoint,
                 deployment=llm_deployment,
+                reasoning_effort=llm_reasoning_effort,
             )
             review_status = "available" if review_summary["pending_count"] == 0 else "model_review_pending"
             review_stage = make_stage(
@@ -576,12 +579,12 @@ def build_master(
                 run_id=run_id,
                 started=review_started,
             )
-            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "trusted-quiz-text-review-v4", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
-            review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
+            review_input_fingerprint = object_hash({"ocr": ocr_stage["outputs"]["fingerprint"], "rules": "compact-quiz-text-review-v6", "model": {"enabled": enable_llm_review, "deployment": llm_deployment, "reasoning_effort": llm_reasoning_effort}})
+            review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment, "reasoning_effort": llm_reasoning_effort}, "reused": False, "source_stage_run": None}
             review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": ocr_stage["outputs"]["fingerprint"]}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
-            review_stage["evaluation"] = {"method": "one schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "trusted language-model corrections replace matching OCR field values in final_fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+            review_stage["evaluation"] = {"method": "one compact schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category and domain assessments are recorded without evidence payloads", "final_fields replace OCR fields only when assessment is corrected or modified", "unchanged means final_fields must equal raw parsed OCR", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["unchanged", "corrected", "modified", "failed"]}
             review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
-            review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
+            review_stage["quality"] = {"confidence": 1.0 if reviews and not review_errors else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
             review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
     stages = [archive_stage, source_stage, collection_stage, classification_stage, layout_stage, card_stage, orientation_stage, ocr_stage, review_stage]
     for stage in spec["stages"][9:]:
@@ -617,6 +620,7 @@ def review_existing_master(
     enable_llm_review: bool,
     llm_endpoint: str | None,
     llm_deployment: str | None,
+    llm_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ) -> tuple[dict[str, Any], Path]:
     pool_root = root / "pipeline" / pool_id
     master_path = pool_root / "processing_master.json"
@@ -638,8 +642,9 @@ def review_existing_master(
         enable_model=enable_llm_review,
         endpoint=llm_endpoint,
         deployment=llm_deployment,
+        reasoning_effort=llm_reasoning_effort,
     )
-    review_input_fingerprint = object_hash({"ocr": object_hash(ocr_records), "rules": "trusted-quiz-text-review-v4", "model": {"enabled": enable_llm_review, "deployment": llm_deployment}})
+    review_input_fingerprint = object_hash({"ocr": object_hash(ocr_records), "rules": "compact-quiz-text-review-v6", "model": {"enabled": enable_llm_review, "deployment": llm_deployment, "reasoning_effort": llm_reasoning_effort}})
     review_status = "available" if review_summary["pending_count"] == 0 else "model_review_pending"
     review_stage = make_stage(
         spec["stages"][8],
@@ -648,11 +653,11 @@ def review_existing_master(
         run_id=run_id,
         started=utc_now(),
     )
-    review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment}, "reused": False, "source_stage_run": None}
+    review_stage["cache"] = {"key": review_input_fingerprint, "parameters": {"model_enabled": enable_llm_review, "deployment": llm_deployment, "reasoning_effort": llm_reasoning_effort}, "reused": False, "source_stage_run": None}
     review_stage["input"] = {"artifact_refs": [{"stage_id": "ocr_extraction", "fingerprint": object_hash(ocr_records)}], "required_information": spec["stages"][8]["input"], "fingerprint": review_input_fingerprint}
-    review_stage["evaluation"] = {"method": "one schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category classification and domain content are recorded as audit findings", "trusted language-model corrections replace matching OCR field values in final_fields", "Hungarian diacritics are preserved", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["verified", "corrected", "model_uncertain", "rejected", "failed"]}
+    review_stage["evaluation"] = {"method": "one compact schema-validated Hungarian text review per quiz card", "rules": ["every quiz OCR record enters the queue exactly once", "category and domain assessments are recorded without evidence payloads", "final_fields replace OCR fields only when assessment is corrected or modified", "unchanged means final_fields must equal raw parsed OCR", "raw OCR remains immutable", "malformed responses become failed review events"], "decisions": ["unchanged", "corrected", "modified", "failed"]}
     review_stage["outputs"] = {"artifact_refs": review_artifacts, "records": reviews, "fingerprint": object_hash(reviews)}
-    review_stage["quality"] = {"confidence": round(sum(item["response"].get("confidence", 0.0) for item in reviews) / len(reviews), 6) if reviews else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
+    review_stage["quality"] = {"confidence": 1.0 if reviews and not review_errors else (1.0 if not review_summary["queue_count"] else 0.0), "review_required": review_summary["pending_count"] > 0, "errors": review_errors, "warnings": [f"{review_summary['pending_count']} review record(s) remain queued"], **review_summary}
     review_stage["handoff"] = {"accepted_refs": [item["card_id"] for item in cards if item.get("final_status") in {"verified", "rejected", "failed", "model_uncertain"}], "pending_refs": [item["card_id"] for item in cards if item.get("final_status") == "model_review_pending"], "rejected_refs": [item["card_id"] for item in cards if item.get("final_status") == "rejected"], "reason": "terminal card review statuses are ready for contract validation" if review_status == "available" else "model review is incomplete"}
 
     stages = master.get("processing", {}).get("stages", [])
@@ -684,7 +689,8 @@ def main() -> int:
     parser.add_argument("--llm", action="store_true", help="Enable the optional Azure vision evaluation during classification.")
     parser.add_argument("--llm-endpoint", default=os.getenv("ENDPOINT_URL", "https://ae-oa-d-we-004.openai.azure.com/"))
     parser.add_argument("--llm-deployment", default=os.getenv("DEPLOYMENT_NAME", "gpt-5.6-luna"))
-    parser.add_argument("--llm-review", action="store_true", help="Enable Azure vision review for every extracted quiz card.")
+    parser.add_argument("--llm-reasoning-effort", choices=sorted(REASONING_EFFORTS), default=os.getenv("LLM_REASONING_EFFORT", DEFAULT_REASONING_EFFORT), help="Reasoning effort for Azure quiz review.")
+    parser.add_argument("--llm-review", action="store_true", help="Enable Azure text review for every extracted quiz card.")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
@@ -696,6 +702,7 @@ def main() -> int:
                 enable_llm_review=args.llm_review,
                 llm_endpoint=args.llm_endpoint,
                 llm_deployment=args.llm_deployment,
+                llm_reasoning_effort=args.llm_reasoning_effort,
             )
         except (OSError, ValueError, json.JSONDecodeError) as error:
             parser.error(str(error))
@@ -716,6 +723,7 @@ def main() -> int:
         llm_endpoint=args.llm_endpoint,
         llm_deployment=args.llm_deployment,
         enable_llm_review=args.llm_review,
+        llm_reasoning_effort=args.llm_reasoning_effort,
     )
     print(json.dumps({"master": relative(master_path), "pool_id": master["pool_id"], "until": args.until, "sources": len(master["artifacts"]["sources"])}, ensure_ascii=False))
     return 0
